@@ -12,7 +12,7 @@ from machine import Pin, I2C, ADC, mem32
 
 import bme680 
 
-payload_name = "GDB 1"
+payload_name = "NeckPi"
 
 _IRQ_CENTRAL_CONNECT = const(1)
 _IRQ_CENTRAL_DISCONNECT = const(2)
@@ -27,27 +27,6 @@ _ENV_SENSE_UUID = bluetooth.UUID(0x181A)
 
 # Wenet service ID
 _WENET_SERVICE_UUID = bluetooth.UUID(0x181C)
-
-# org.bluetooth.characteristic.temperature
-_PRESSURE_CHAR = (
-    bluetooth.UUID(0x2A6D),
-    _FLAG_READ | _FLAG_NOTIFY | _FLAG_INDICATE,
-)
-
-_TEMP_CHAR = (
-    bluetooth.UUID(0x2A6E),
-    _FLAG_READ | _FLAG_NOTIFY | _FLAG_INDICATE,
-)
-
-_HUMIDITY_CHAR = (
-    bluetooth.UUID(0x2A6F), 
-    _FLAG_READ | _FLAG_NOTIFY | _FLAG_INDICATE,
-)
-
-_ENV_SENSE_SERVICE = (
-    _ENV_SENSE_UUID,
-    (_PRESSURE_CHAR, _TEMP_CHAR, _HUMIDITY_CHAR,),
-)
 
 _WENET_CHAR = (
     bluetooth.UUID("3d235f0e-61f8-4455-89c6-2f7d73c33178"), 
@@ -65,7 +44,7 @@ _ADV_APPEARANCE_GENERIC_THERMOMETER = const(768)
 class BLE_BME680:
     def __init__(self, ble, i2c, name = None):
 
-        self.sensor = bme680.BME680_I2C(i2c, address=0x76)
+        self.sensors = [bme680.BME680_I2C(i2c, address=0x76), bme680.BME680_I2C(i2c, address=0x77)]
 
         #self.sensor.humidity_oversample(2)
         #self.sensor.pressure_oversample(4)
@@ -108,55 +87,24 @@ class BLE_BME680:
         
         print("Starting reading...", end="")
 
-        self.sensor._perform_reading()
+        for sensor in self.sensors:
+            sensor._perform_reading()
+
         core_temp = self._get_temp()
         battery_voltage = self._get_batt()
 
         print("done!")
 
-        temperature_deg_c = self.sensor.temperature
-        pressure = self.sensor.pressure
-        humidity = self.sensor.humidity
-        gas = self.sensor.gas
+        wenet_data = f"{self._count},{core_temp:0.2f},{battery_voltage:0.2f},"
 
-        # print(f"g: {gas:0.2f} R");
-
-
-        # print(f"t: {temperature_deg_c:0.2f} degC");
-        # self._ble.gatts_write(self._temp_handle, struct.pack('<h', int(temperature_deg_c * 100)))
-        # if notify or indicate:
-        #     for conn_handle in self._connections:
-        #         if notify:
-        #             # Notify connected centrals.
-        #             self._ble.gatts_notify(conn_handle, self._temp_handle)
-        #         if indicate:
-        #             # Indicate connected centrals.
-        #             self._ble.gatts_indicate(conn_handle, self._temp_handle)
-
-        # print(f"h: {humidity:0.2f} %");
-        # self._ble.gatts_write(self._humidity_handle, struct.pack("<H", int(humidity * 100)))
-        # if notify or indicate:
-        #     for conn_handle in self._connections:
-        #         if notify:
-        #             # Notify connected centrals.
-        #             self._ble.gatts_notify(conn_handle, self._humidity_handle)
-        #         if indicate:
-        #             # Indicate connected centrals.
-        #             self._ble.gatts_indicate(conn_handle, self._humidity_handle)
-
-        # print(f"p: {pressure:0.2f} mb");
-        # self._ble.gatts_write(self._pressure_handle, struct.pack("<I", int(pressure * 1000)))
-        # if notify or indicate:
-        #     for conn_handle in self._connections:
-        #         if notify:
-        #             # Notify connected centrals.
-        #             self._ble.gatts_notify(conn_handle, self._pressure_handle)
-        #         if indicate:
-        #             # Indicate connected centrals.
-        #             self._ble.gatts_indicate(conn_handle, self._pressure_handle)
-
-        wenet_data = f"{self._count},{core_temp:0.2f},{battery_voltage:0.2f}," + \
-                     f"{pressure:0.2f},{temperature_deg_c:0.2f},{humidity:0.2f},{gas:0.0f}"
+        for sensor in self.sensors:
+            temperature_deg_c = sensor.temperature
+            pressure = sensor.pressure
+            humidity = sensor.humidity
+            gas = sensor.gas
+            
+            wenet_data = wenet_data + f"{pressure:0.2f},{temperature_deg_c:0.2f},{humidity:0.2f},{gas:0.0f},"
+        
         self._ble.gatts_write(self._wenet_handle, wenet_data)
         if notify or indicate:
             for conn_handle in self._connections:
@@ -184,6 +132,7 @@ class BLE_BME680:
         return 27 - (reading - 0.706) / 0.001721
     
 
+    # configure pins for VSYS reading
     def setPad(self, gpio, value):
         mem32[0x4001c000 | (4+ (4 * gpio))] = value
         
