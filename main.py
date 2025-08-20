@@ -1,10 +1,4 @@
-# This example demonstrates a simple temperature sensor peripheral.
-#
-# The sensor's local value is updated, and it will notify
-# any connected central every 10 seconds.
-
 import bluetooth
-import struct
 import time
 from ble_advertising import advertising_payload
 from micropython import const
