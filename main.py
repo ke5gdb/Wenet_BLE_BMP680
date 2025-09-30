@@ -2,29 +2,41 @@ import bluetooth
 import time
 from ble_advertising import advertising_payload
 from micropython import const
-from machine import Pin, I2C, ADC, mem32
+from machine import Pin, ADC, mem32
 
-import bme680 
-
-payload_name = "NeckPi"
+# Must be 4 characters or less
+payload_name = "Pico"
 
 _IRQ_CENTRAL_CONNECT = const(1)
 _IRQ_CENTRAL_DISCONNECT = const(2)
+_IRQ_GATTS_WRITE = const(3)
 _IRQ_GATTS_INDICATE_DONE = const(20)
 
 _FLAG_READ = const(0x0002)
+_FLAG_WRITE = const(0x0008)
 _FLAG_NOTIFY = const(0x0010)
 _FLAG_INDICATE = const(0x0020)
-
-# org.bluetooth.service.environmental_sensing
-_ENV_SENSE_UUID = bluetooth.UUID(0x181A)
 
 # Wenet service ID
 _WENET_SERVICE_UUID = bluetooth.UUID(0x181C)
 
+_UART_UUID = bluetooth.UUID("6E400001-B5A3-F393-E0A9-E50E24DCCA9E")
+
+_UART_TX = (
+    bluetooth.UUID("6E400003-B5A3-F393-E0A9-E50E24DCCA9E"),
+    _FLAG_NOTIFY,
+)
+_UART_RX = (
+    bluetooth.UUID("6E400002-B5A3-F393-E0A9-E50E24DCCA9E"),
+    _FLAG_WRITE,
+)
+_UART_SERVICE = (
+    _UART_UUID,
+    (_UART_TX, _UART_RX),
+)
+
 _WENET_CHAR = (
-    bluetooth.UUID("3d235f0e-61f8-4455-89c6-2f7d73c33178"), 
-    _FLAG_READ | _FLAG_NOTIFY | _FLAG_INDICATE,
+    bluetooth.UUID("3d235f0e-61f8-4455-89c6-2f7d73c33178"),0x0000,
 )
 
 _WENET_SERVICE = (
@@ -32,32 +44,25 @@ _WENET_SERVICE = (
     (_WENET_CHAR,),
 )
 
-# org.bluetooth.characteristic.gap.appearance.xml
-_ADV_APPEARANCE_GENERIC_THERMOMETER = const(768)
-
-class BLE_BME680:
-    def __init__(self, ble, i2c, name = None):
-
-        self.sensors = [bme680.BME680_I2C(i2c, address=0x76), bme680.BME680_I2C(i2c, address=0x77)]
-
-        #self.sensor.humidity_oversample(2)
-        #self.sensor.pressure_oversample(4)
-        #self.sensor.temperature_oversample(8)
-        #self.sensor.filter_size(2)
-
+class HAB_BLE:
+    def __init__(self, ble, name = None):
         self._count = 0
-
         self._ble = ble
         self._ble.active(True)
         self._ble.irq(self._irq)
-#        ((self._pressure_handle,self._temp_handle,self._humidity_handle),) = self._ble.gatts_register_services((_ENV_SENSE_SERVICE,))
-        ((self._wenet_handle,),) = self._ble.gatts_register_services((_WENET_SERVICE,))
+        self._rx_buffer = bytearray()
+        self._handler = self.handler
+
+        ((self._wenet_handle,),(self._uart_tx, self.uart_rx,),) = self._ble.gatts_register_services((_WENET_SERVICE,_UART_SERVICE,))
         self._connections = set()
+        
         # if payload_name == None:
         #     payload_name = 'Pico %s' % ubinascii.hexlify(self._ble.config('mac')[1],':').decode().upper()
-        print('Sensor name %s' % payload_name)
+        
+        print('Sensor name: %s' % payload_name)
+        
         self._payload = advertising_payload(
-            name=payload_name, services=[_WENET_SERVICE_UUID]
+            name=payload_name, services=[_UART_UUID, _WENET_SERVICE_UUID]
         )
         self._advertise()
 
@@ -75,45 +80,56 @@ class BLE_BME680:
             self._advertise()
         elif event == _IRQ_GATTS_INDICATE_DONE:
             conn_handle, value_handle, status = data
+        elif event == _IRQ_GATTS_WRITE:
+            conn_handle, value_handle = data
+            if conn_handle in self._connections and value_handle == self.uart_rx:
+                self._rx_buffer += self._ble.gatts_read(self.uart_rx)
+                if self._handler:
+                    self._handler()
 
     def update_sensor(self, notify=True, indicate=False):
         # Write the local value, ready for a central to read.
         
-        print("Starting reading...", end="")
-
-        for sensor in self.sensors:
-            sensor._perform_reading()
+        # Change power supply mode to reduce ripple
+        Pin('WL_GPIO1', Pin.OUT).on()
 
         core_temp = self._get_temp()
         battery_voltage = self._get_batt()
 
-        print("done!")
+        adc0 = self._get_adc(0)
+        adc1 = self._get_adc(1)
+        adc2 = self._get_adc(2)
 
-        wenet_data = f"{self._count},{core_temp:0.2f},{battery_voltage:0.2f},"
+        # Revert PSU mode to more efficient mode
+        Pin('WL_GPIO1', Pin.OUT).off()
 
-        for sensor in self.sensors:
-            temperature_deg_c = sensor.temperature
-            pressure = sensor.pressure
-            humidity = sensor.humidity
-            gas = sensor.gas
-            
-            wenet_data = wenet_data + f"{pressure:0.2f},{temperature_deg_c:0.2f},{humidity:0.2f},{gas:0.0f},"
+        data = f"{self._count},{battery_voltage:0.2f},{core_temp:0.2f},{adc0},{adc1},{adc2}"
         
-        self._ble.gatts_write(self._wenet_handle, wenet_data)
+        self._ble.gatts_write(self._uart_tx, data)
         if notify or indicate:
             for conn_handle in self._connections:
                 if notify:
                     # Notify connected centrals.
-                    self._ble.gatts_notify(conn_handle, self._wenet_handle)
+                    self._ble.gatts_notify(conn_handle, self._uart_tx)
                 if indicate:
                     # Indicate connected centrals.
-                    self._ble.gatts_indicate(conn_handle, self._wenet_handle)
+                    self._ble.gatts_indicate(conn_handle, self._uart_tx)
 
-        print(wenet_data)
+        print(f"BLE TX: {data}")
 
         self._count = (self._count + 1) % 65536
 
-    def _advertise(self, interval_us=500000):
+    def _read_uart(self, sz=None):
+        if not sz:
+            sz = len(self._rx_buffer)
+        result = self._rx_buffer[0:sz]
+        self._rx_buffer = self._rx_buffer[sz:]
+        return result
+    
+    def handler(self):
+        print(f"BLE RX: {self._read_uart().decode().strip()}")
+
+    def _advertise(self, interval_us=250000):
         self._ble.gap_advertise(interval_us, adv_data=self._payload)
 
     # ref https://github.com/raspberrypi/pico-micropython-examples/blob/master/adc/temperature.py
@@ -125,44 +141,35 @@ class BLE_BME680:
         # Typically, Vbe = 0.706V at 27 degrees C, with a slope of -1.721mV (0.001721) per degree.
         return 27 - (reading - 0.706) / 0.001721
     
+    def _get_adc(self, adc):     
+        return ADC(adc).read_u16() >> 4
 
-    # configure pins for VSYS reading
-    def setPad(self, gpio, value):
-        mem32[0x4001c000 | (4+ (4 * gpio))] = value
+    def _setPad(self, gpio, value):
+        mem32[0x4001c000 | (4 + (4 * gpio))] = value
         
-    def getPad(self, gpio):
-        return mem32[0x4001c000 | (4+ (4 * gpio))]
-
+    def _getPad(self, gpio):
+        return mem32[0x4001c000 | (4 + (4 * gpio))]
 
     def _get_batt(self):
-        conversion_factor = 3 * 3.3 / (65535)
+        conversion_factor = 3 * (3.3 / (65535))
 
-        oldpad = self.getPad(29)
-        self.setPad(29,128)  #no pulls, no output, no input
+        oldpad = self._getPad(29)
+        self._setPad(29,128)  #no pulls, no output, no input
+        # Pin(29, Pin.ALT, pull=None, alt=7)
         reading = ADC(3).read_u16()
-        self.setPad(29,oldpad)
+        self._setPad(29,oldpad)
 
-        print(reading)
         reading = reading * conversion_factor
 
         return reading 
 
 if __name__ == "__main__":
     ble = bluetooth.BLE()
-    i2c = I2C(1, scl=Pin(7), sda=Pin(6), freq=100000)
-    temp = BLE_BME680(ble, i2c)
+    temp = HAB_BLE(ble)
     counter = 0
     led = Pin('LED', Pin.OUT)
     while True:
         temp.update_sensor(notify=True, indicate=False)
         led.toggle()
-        time.sleep_ms(1000)
+        time.sleep_ms(500)
         counter += 1
-
-    # from machine import I2C
-    # i2c = I2C(1, scl=Pin(7), sda=Pin(6), freq=100000)
-    # devices = i2c.scan()
-
-    # if devices:
-    #     for d in devices:
-    #         print(hex(d))
