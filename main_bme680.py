@@ -207,21 +207,21 @@ class BLE_BME680:
         return reading 
 
 if __name__ == "__main__":
-    ble = bluetooth.BLE()
-    i2c = I2C(1, scl=Pin(7), sda=Pin(6), freq=100000)
-    temp = BLE_BME680(ble, i2c)
-    counter = 0
-    led = Pin('LED', Pin.OUT)
-    while True:
-        temp.update_sensor(notify=True, indicate=False)
-        led.toggle()
-        time.sleep_ms(1000)
-        counter += 1
-
-    # from machine import I2C
+    # ble = bluetooth.BLE()
     # i2c = I2C(1, scl=Pin(7), sda=Pin(6), freq=100000)
-    # devices = i2c.scan()
+    # temp = BLE_BME680(ble, i2c)
+    # counter = 0
+    # led = Pin('LED', Pin.OUT)
+    # while True:
+    #     temp.update_sensor(notify=True, indicate=False)
+    #     led.toggle()
+    #     time.sleep_ms(1000)
+    #     counter += 1
 
-    # if devices:
-    #     for d in devices:
-    #         print(hex(d))
+    from machine import I2C
+    i2c = I2C(0, scl=Pin(5), sda=Pin(4), freq=100000)
+    devices = i2c.scan()
+
+    if devices:
+        for d in devices:
+            print(hex(d))

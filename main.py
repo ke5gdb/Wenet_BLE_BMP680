@@ -1,11 +1,12 @@
 import os
 import bluetooth
 import time
-from ble_advertising import advertising_payload
 from micropython import const
 from machine import Pin, ADC, mem32, RTC, I2C
 
+from ble_advertising import advertising_payload
 from sd_card import SD_Card
+from pcf8523 import PCF8523
 
 # Task list:
 # * SD card error checking
@@ -203,6 +204,22 @@ if __name__ == "__main__":
         for d in devices:
             print(hex(d))
     print("done!")
+
+    if 0x68 in devices:
+        i2c_rtc = PCF8523(i2c)
+        rtc = RTC()
+        rtc.datetime(i2c_rtc.datetime)
+        now = rtc.datetime()
+        print(f"RTC detected! Synchronized CPU clock -- {now[0]}-{now[1]:02}-{now[2]:02} {now[4]:02}:{now[5]:02}:{now[6]:02}")
+
+    if 0x77 in devices:
+        print("BME680 detected!")
+
+    if 0x1c in devices:
+        print("LIS3MDL detected!")
+
+    if 0x6a in devices:
+        print("LSM6DSOX detected!")
 
     time.sleep(2)
 
