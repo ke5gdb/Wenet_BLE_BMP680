@@ -1,11 +1,21 @@
+import os
 import bluetooth
 import time
 from ble_advertising import advertising_payload
 from micropython import const
-from machine import Pin, ADC, mem32
+from machine import Pin, ADC, mem32, RTC, I2C
+
+from sd_card import SD_Card
+
+# Task list:
+# * SD card error checking
+# * RTC -- read from hardware if available on init
+# * RTC -- write to hardware
+# * RTC -- periodically update running RTC
+
 
 # Must be 4 characters or less
-payload_name = "Pico"
+payload_name = "Test"
 
 _IRQ_CENTRAL_CONNECT = const(1)
 _IRQ_CENTRAL_DISCONNECT = const(2)
@@ -45,13 +55,15 @@ _WENET_SERVICE = (
 )
 
 class HAB_BLE:
-    def __init__(self, ble, name = None):
+    def __init__(self, ble, i2c, name = None):
         self._count = 0
+        self._sub_count = 0
         self._ble = ble
         self._ble.active(True)
         self._ble.irq(self._irq)
         self._rx_buffer = bytearray()
         self._handler = self.handler
+        self._i2c = i2c
 
         ((self._wenet_handle,),(self._uart_tx, self.uart_rx,),) = self._ble.gatts_register_services((_WENET_SERVICE,_UART_SERVICE,))
         self._connections = set()
@@ -65,6 +77,13 @@ class HAB_BLE:
             name=payload_name, services=[_UART_UUID, _WENET_SERVICE_UUID]
         )
         self._advertise()
+
+        # Configure SD card, if available
+        self._sd = SD_Card()
+
+        # Initialize RTC
+        self._rtc = RTC()
+        self._now = None
 
     def _irq(self, event, data):
         # Track connections so we can send notifications.
@@ -103,7 +122,13 @@ class HAB_BLE:
         # Revert PSU mode to more efficient mode
         Pin('WL_GPIO1', Pin.OUT).off()
 
-        data = f"{self._count},{battery_voltage:0.2f},{core_temp:0.2f},{adc0},{adc1},{adc2}"
+        now = self._rtc.datetime()
+        ms = time.time_ns() // 1_000_000 % 1000
+        timestamp = f"{now[0]}-{now[1]:02}-{now[2]:02} {now[4]:02}:{now[5]:02}:{now[6]:02}.{ms:03}"
+
+        data = f"{timestamp},{self._count},{battery_voltage:0.2f},{core_temp:0.2f},{adc0},{adc1},{adc2}"
+
+        self._sd.write(data)
         
         self._ble.gatts_write(self._uart_tx, data)
         if notify or indicate:
@@ -115,7 +140,7 @@ class HAB_BLE:
                     # Indicate connected centrals.
                     self._ble.gatts_indicate(conn_handle, self._uart_tx)
 
-        print(f"BLE TX: {data}")
+        print(data)
 
         self._count = (self._count + 1) % 65536
 
@@ -154,8 +179,10 @@ class HAB_BLE:
         conversion_factor = 3 * (3.3 / (65535))
 
         oldpad = self._getPad(29)
-        self._setPad(29,128)  #no pulls, no output, no input
-        # Pin(29, Pin.ALT, pull=None, alt=7)
+        if "Pico 2" in os.uname().machine:
+            Pin(29, Pin.ALT, pull=None, alt=7)
+        else:
+            self._setPad(29,128)  #no pulls, no output, no input
         reading = ADC(3).read_u16()
         self._setPad(29,oldpad)
 
@@ -165,11 +192,24 @@ class HAB_BLE:
 
 if __name__ == "__main__":
     ble = bluetooth.BLE()
-    temp = HAB_BLE(ble)
-    counter = 0
+    i2c = I2C(0, scl=Pin(5), sda=Pin(4), freq=100000)
+    hab_ble = HAB_BLE(ble, i2c)
     led = Pin('LED', Pin.OUT)
+    count = 0
+
+    print("Checking for I2C devices...")
+    devices = i2c.scan()
+    if devices:
+        for d in devices:
+            print(hex(d))
+    print("done!")
+
+    time.sleep(2)
+
     while True:
-        temp.update_sensor(notify=True, indicate=False)
-        led.toggle()
-        time.sleep_ms(500)
-        counter += 1
+        notify = False
+        if count % 50:
+            notify = True
+            led.toggle()
+        hab_ble.update_sensor(notify=notify, indicate=False)
+        time.sleep_ms(10)
