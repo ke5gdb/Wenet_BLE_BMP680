@@ -21,6 +21,8 @@ wlan.active(True)
 wlan.connect(SSID, PASSWORD)
 while not wlan.isconnected():
     time.sleep(1)
+    print(".", end='')
+print()
 print("Connected to Wi-Fi")
 
 # Initialize RTC

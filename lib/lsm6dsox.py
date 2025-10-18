@@ -164,8 +164,11 @@ class LSM6DSOX:
         # Set Gyroscope datarate and scale.
         self._write_reg(_CTRL2_G, (ODR[gyro_odr] << 4) | (SCALE_GYRO[gyro_scale] << 2) | 0)
 
+        # Enable Block Data Update
+        self._write_reg(_CTRL3_C, self._read_reg(_CTRL3_C) | 0x40)
+        
         # Configure interrupts for tap latched, tap clear
-        self._write_reg(_TAP_CFG0, 0x81)
+        self._write_reg(_TAP_CFG0, 0x41)
 
         # CEnable basic interrupts, for purpose of free-fall detection
         self._write_reg(_TAP_CFG2, 0x80)
@@ -300,11 +303,10 @@ class LSM6DSOX:
     def free_fall(self) -> bool:
         """Returns free fall detection bit"""
         buf = self._read_reg(0x1A, size=1)
-        print(buf)
         if isinstance(buf, list):
             buf = buf[0]
 
-        return bool(buf & 0x40)
+        return bool(buf & 0x01)
 
 if __name__ == "__main__":
     print("Running LSM6DSOX demo!")
@@ -320,7 +322,6 @@ if __name__ == "__main__":
         if lsm.free_fall():
             print("-----> FREE FALL DETECTED <-----")
             free_fall_count += 1
-            time.sleep(3)
 
         print('Accelerometer: x:{:>8.3f} y:{:>8.3f} z:{:>8.3f}'.format(*lsm.accel()))
         print('Gyroscope:     x:{:>8.3f} y:{:>8.3f} z:{:>8.3f}'.format(*lsm.gyro()))
