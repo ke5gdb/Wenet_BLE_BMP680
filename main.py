@@ -12,9 +12,10 @@ import rp2
 from sd_card import SD_Card
 from pcf8523 import PCF8523
 from lsm6dsox import LSM6DSOX
+from lis3mdl import LIS3MDL
+from bme680 import BME680_I2C
 
-# Must be 4 characters or less
-sensor_name = "Test"
+sensor_name = "Sensor Name"
 
 # BLE Update rate (in ms)
 update_interval = 500
@@ -40,13 +41,7 @@ nus_tx_characteristic = aioble.Characteristic(
     nus_service, _NUS_TX_CHAR_UUID, read=False, notify=True
 )
 
-print("hello")
-
 aioble.register_services(temp_service, nus_service)
-
-print("hello again")
-
-time.sleep(2)
 
 # Initialize interfaces
 sd = SD_Card()
@@ -55,6 +50,7 @@ i2c = I2C(0, scl=Pin(5), sda=Pin(4), freq=100000)
 led = Pin('LED', Pin.OUT)
 
 lsm = None
+lis = None
 bme = None
 
 def build_packet(packet_dict):
@@ -122,27 +118,79 @@ async def sensor_task():
         adc1 = get_adc(1)
         adc2 = get_adc(2)
 
-        if lsm:
-            if lsm.free_fall():
-                print("-----> FREE FALL DETECTED <-----")
-                lsm_free_fall_count += 1
-
-            (accel_x, accel_y, accel_z) = lsm.accel()
-            (gyro_x, gyro_y, gyro_z) = lsm.gyro()
-            lsm_temperature = lsm.temperature()
-
-            time.sleep_ms(50)
-
         packet_dict = {
+            # Universal
             'time' : get_iso_timestamp(),
             'id' : sensor_name,
             'count' : count,
-            'voltage' : get_batt(), 
-            'core_temp' : get_core_temp(),
+            'volts' : get_batt(), 
+            'pi_temp' : get_core_temp(),
+
+            # ADC inputs
             'adc0' : adc0,
             'adc1' : adc1,
             'adc2' : adc2
         }
+
+        if lsm:
+            try:
+                if lsm.free_fall():
+                    print("-----> FREE FALL DETECTED <-----")
+                    lsm_free_fall_count += 1
+
+                (accel_x, accel_y, accel_z) = lsm.accel()
+                (gyro_x, gyro_y, gyro_z) = lsm.gyro()
+                lsm_temperature = lsm.temperature()
+
+                lsm_dict = {
+                    'a_x' : accel_x,
+                    'a_y' : accel_y,
+                    'a_z' : accel_z,
+                    'g_x' : gyro_x,
+                    'g_y' : gyro_y, 
+                    'g_z' : gyro_z,
+                    'fall_cnt' : lsm_free_fall_count,
+                    'imu_temp' : lsm_temperature
+                }
+
+                packet_dict.update(lsm_dict)
+            except:
+                print("LSM6DSO communications error!")
+
+        # Get data from LIS3MDL magnetometer/compass, if available 
+        if lis:
+            try:
+                (mag_x, mag_y, mag_z) = lis.magnetic
+
+                lis_dict = {
+                    'mag_x' : mag_x,
+                    'mag_y' : mag_y,
+                    'mag_z' : mag_z
+                }
+
+                packet_dict.update(lis_dict)
+            except:
+                print("LIS3MDL communications error!")
+
+        # Get data from BME680, if available
+        if bme:
+            try:
+                bme._perform_reading()
+                bme_temp = bme.temperature
+                bme_pressure = bme.pressure
+                bme_humidity = bme.humidity
+                bme_gas = bme.gas
+
+                bme_dict = {
+                    'temp' : bme_temp,
+                    'pres' : bme_pressure,
+                    'humi' : bme_humidity,
+                    'gas' : bme.gas
+                }
+
+                packet_dict.update(bme_dict)
+            except:
+                print("BME680 communications error!")
 
         # Revert PSU mode to more efficient mode
         Pin('WL_GPIO1', Pin.OUT).off()
@@ -185,31 +233,32 @@ async def peripheral_task():
             await connection.disconnected(timeout_ms=None)
 
 async def main():
-    # global lsm
+    global lsm
+    global lis
+    global bme
 
     print("Checking for I2C devices...")
     devices = i2c.scan()
     if devices:
         for d in devices:
-            print(hex(d))
-    print("done!")
-
-    if 0x68 in devices:
-        i2c_rtc = PCF8523(i2c)
-        rtc = RTC()
-        rtc.datetime(i2c_rtc.datetime)
-        now = rtc.datetime()
-        print(f"RTC detected! Synchronized CPU clock -- {now[0]}-{now[1]:02}-{now[2]:02} {now[4]:02}:{now[5]:02}:{now[6]:02}")
-
-    if 0x77 in devices:
-        print("BME680 detected!")
-
-    if 0x1c in devices:
-        print("LIS3MDL detected!")
-
-    if 0x6a in devices:
-        print("LSM6DSOX detected!")
-        # lsm = LSM6DSOX(i2c)
+            if d == 0x1c:
+                print("LIS3MDL detected!")
+                lis = LIS3MDL(i2c)
+            elif d == 0x68:
+                print("PCF8523 detected!")
+                i2c_rtc = PCF8523(i2c)
+                rtc = RTC()
+                rtc.datetime(i2c_rtc.datetime)
+                now = rtc.datetime()
+                print(f"Synchronized CPU clock -- {now[0]}-{now[1]:02}-{now[2]:02} {now[4]:02}:{now[5]:02}:{now[6]:02}")
+            elif d == 0x6a:
+                print("LSM6DSOX detected!")
+                lsm = LSM6DSOX(i2c)
+            elif d == 0x77:
+                print("BME680 detected!")
+                bme = BME680_I2C(i2c, address=0x77)
+            else:
+                print(f"Unknown device detected at 0x{d:02x}")
 
     t1 = asyncio.create_task(sensor_task())
     t2 = asyncio.create_task(peripheral_task())
