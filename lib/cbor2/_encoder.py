@@ -58,7 +58,7 @@ def encode_float(encoder, value):
     elif math.isinf(value):
         encoder.write(b"\xf9\x7c\x00" if value > 0 else b"\xf9\xfc\x00")
     else:
-        encoder.write(struct.pack(">Bd", 0xFB, value))
+        encoder.write(struct.pack(">Bf", 0xFA, value))
 
 
 def encode_int(encoder, value):
