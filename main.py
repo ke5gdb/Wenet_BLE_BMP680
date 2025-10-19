@@ -19,7 +19,7 @@ from lsm6dsox import LSM6DSOX
 from lis3mdl import LIS3MDL
 from bme680 import BME680_I2C
 
-payload_name = "XB-RPT"
+payload_name = "BalloonNeck"
 
 # BLE Update rate (in ms)
 update_interval = 500
@@ -370,6 +370,7 @@ async def sd_write_task():
                         buf = buf + data
                     # print(data_length)
                     f.write(buf)
+                    f.flush()
                     sd_queue.clear()
                     # t2 = time.time_ns() // 1_000_000
                     # print(f"{(t2 - t1)}, {(data_length / (t2 - t1))}")
