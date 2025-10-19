@@ -111,7 +111,7 @@ def get_batt():
     return reading 
 
 async def sensor_task():
-    sensor_name = 'generic'
+    sensor_name = '1'
     
     count = 0
     global debug
@@ -145,26 +145,25 @@ async def sensor_task():
         Pin('WL_GPIO1', Pin.OUT).on()
         
         # Get ADC values, scale as needed
-        adc0 = get_adc(0)
+        # adc0 = get_adc(0)
         # adc1 = get_adc(1)
         # adc2 = get_adc(2)
 
-        vbatt = (get_adc(0) + 60) * vbatt_scale
+        # vbatt = (get_adc(0) + 60) * vbatt_scale
 
         packet_dict = {
             # Universal
             'time' : timestamp,
-            'payload' : payload_name,
-            'id' : sensor_name,
+            'id' : payload_name + '_' + sensor_name,
             'count' : count,
             'v_in' : get_batt(), 
             'pi_temp' : int(get_core_temp()),
 
             # ADC inputs
-            'adc0' : adc0,
+            # 'adc0' : adc0,
             # 'adc1' : adc1,
             # 'adc2' : adc2
-            'vbatt' : vbatt
+            # 'vbatt' : vbatt
         }
 
         # Get data from LIS3MDL magnetometer/compass, if available 
@@ -267,8 +266,7 @@ async def sensor_task_lsm6dso():
             packet_dict = {
                 # Universal
                 'time' : timestamp,
-                'payload' : payload_name,
-                'id' : sensor_name,
+                'id' : payload_name + '_' + sensor_name,
                 'count' : count,
             }
 
