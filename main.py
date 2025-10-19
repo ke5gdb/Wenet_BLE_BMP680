@@ -6,16 +6,17 @@ import cbor2
 import json
 import time
 from micropython import const
-from machine import Pin, ADC, mem32, RTC, I2C
+from machine import Pin, ADC, mem32, RTC, I2C, SPI
 import rp2
+import sdcard
+import vfs
 
-from sd_card import SD_Card
 from pcf8523 import PCF8523
 from lsm6dsox import LSM6DSOX
 from lis3mdl import LIS3MDL
 from bme680 import BME680_I2C
 
-sensor_name = "Sensor Name"
+payload_name = "Payload Name"
 
 # BLE Update rate (in ms)
 update_interval = 500
@@ -44,17 +45,21 @@ nus_tx_characteristic = aioble.Characteristic(
 aioble.register_services(temp_service, nus_service)
 
 # Initialize interfaces
-sd = SD_Card()
 rtc = RTC()
 i2c = I2C(0, scl=Pin(5), sda=Pin(4), freq=100000)
 led = Pin('LED', Pin.OUT)
+sd_queue = []
 
 lsm = None
 lis = None
 bme = None
 
+debug = False
+
 def build_packet(packet_dict):
     packet = cbor2.dumps(packet_dict)
+    if len(packet) > 228:
+        print(f">90% of packet length used ({len(packet)} of 254 bytes)! Consider splitting into two packets.")
     # Need binary packet to be less than 254 bytes to fit in wenet telemetry frame
     assert(len(packet) <= 254)
     return packet
@@ -62,7 +67,7 @@ def build_packet(packet_dict):
 def get_iso_timestamp():
     now = rtc.datetime()
     ms = time.time_ns() // 1_000_000 % 1000
-    return f"{now[0]}-{now[1]:02}-{now[2]:02}T{now[4]:02}:{now[5]:02}:{now[6]:02}.{ms:03}+00:00"
+    return f"{now[0]}{now[1]:02}{now[2]:02}T{now[4]:02}{now[5]:02}{now[6]:02}.{ms:03}Z"
 
 # ref https://github.com/raspberrypi/pico-micropython-examples/blob/master/adc/temperature.py
 def get_core_temp():     
@@ -97,13 +102,19 @@ def get_batt():
     return reading 
 
 async def sensor_task():
+    sensor_name = 'generic'
+    
     count = 0
-    debug = False
+    global debug
+    global sd_queue
 
-    lsm_free_fall_count = 0
+    now = time.time_ns() // 1_000_000
+    update_at = now - (now % update_interval) + update_interval
 
     while True:
-        # Offer a mechanism to send JSON strings via BLE UART for debugging using nRF phone app
+        timestamp = get_iso_timestamp()
+
+        # Offer a mechanism to send JSON strings via BLE UART for debugging using nRF app
         if rp2.bootsel_button():
             for i in range(10):
                 led.toggle()
@@ -120,42 +131,18 @@ async def sensor_task():
 
         packet_dict = {
             # Universal
-            'time' : get_iso_timestamp(),
+            'time' : timestamp,
+            'payload' : payload_name,
             'id' : sensor_name,
             'count' : count,
-            'volts' : get_batt(), 
-            'pi_temp' : get_core_temp(),
+            'batt' : get_batt(), 
+            'pi_temp' : int(get_core_temp()),
 
             # ADC inputs
             'adc0' : adc0,
             'adc1' : adc1,
             'adc2' : adc2
         }
-
-        if lsm:
-            try:
-                if lsm.free_fall():
-                    print("-----> FREE FALL DETECTED <-----")
-                    lsm_free_fall_count += 1
-
-                (accel_x, accel_y, accel_z) = lsm.accel()
-                (gyro_x, gyro_y, gyro_z) = lsm.gyro()
-                lsm_temperature = lsm.temperature()
-
-                lsm_dict = {
-                    'a_x' : accel_x,
-                    'a_y' : accel_y,
-                    'a_z' : accel_z,
-                    'g_x' : gyro_x,
-                    'g_y' : gyro_y, 
-                    'g_z' : gyro_z,
-                    'fall_cnt' : lsm_free_fall_count,
-                    'imu_temp' : lsm_temperature
-                }
-
-                packet_dict.update(lsm_dict)
-            except:
-                print("LSM6DSO communications error!")
 
         # Get data from LIS3MDL magnetometer/compass, if available 
         if lis:
@@ -179,13 +166,13 @@ async def sensor_task():
                 bme_temp = bme.temperature
                 bme_pressure = bme.pressure
                 bme_humidity = bme.humidity
-                bme_gas = bme.gas
+                # bme_gas = bme.gas
 
                 bme_dict = {
                     'temp' : bme_temp,
                     'pres' : bme_pressure,
                     'humi' : bme_humidity,
-                    'gas' : bme.gas
+                    # 'gas' : bme_gas
                 }
 
                 packet_dict.update(bme_dict)
@@ -205,8 +192,7 @@ async def sensor_task():
 
         print(json_packet)
         
-        if not sd.write(json_packet):
-            print("SD card write failure")
+        sd_queue.append(json_packet)
 
         count = (count + 1) % 65536
 
@@ -218,7 +204,102 @@ async def sensor_task():
             await asyncio.sleep_ms(int(update_interval * 4 / 5))
         else:
             led.toggle()
-            await asyncio.sleep_ms(update_interval)
+            
+            now = time.time_ns() // 1_000_000
+            if now < update_at:
+                await asyncio.sleep_ms(update_at - now)
+            else:
+                await asyncio.sleep_ms(1)
+
+        update_at += update_interval
+
+async def sensor_task_lsm6dso():
+    sensor_name = 'LSM6DSOX'
+
+    inner_loop_delay = 25
+
+    global debug
+    global sd_queue
+
+    count = 0
+    lsm_free_fall_count = 0
+
+    now = time.time_ns() // 1_000_000
+    update_at = now - (now % update_interval) + update_interval
+
+    if not lsm:
+        return
+
+    while True:
+        loop = True
+        while loop: 
+            timestamp = get_iso_timestamp()
+
+            packet_dict = {
+                # Universal
+                'time' : timestamp,
+                'payload' : payload_name,
+                'id' : sensor_name,
+                'count' : count,
+            }
+
+            try:
+                if lsm.free_fall():
+                    print("-----> FREE FALL DETECTED <-----")
+                    lsm_free_fall_count += 1
+                    loop = False
+
+                (accel_x, accel_y, accel_z) = lsm.accel()
+                (gyro_x, gyro_y, gyro_z) = lsm.gyro()
+                lsm_temperature = lsm.temperature()
+                
+                lsm_dict = {
+                    'a_x' : accel_x,
+                    'a_y' : accel_y,
+                    'a_z' : accel_z,
+                    'g_x' : gyro_x,
+                    'g_y' : gyro_y, 
+                    'g_z' : gyro_z,
+                    'fall_cnt' : lsm_free_fall_count,
+                    'imu_temp' : lsm_temperature
+                }
+
+                packet_dict.update(lsm_dict)
+            except:
+                print("LSM6DSO communications error!")
+        
+            json_packet = json.dumps(packet_dict)
+
+            # print(json_packet)
+            
+            sd_queue.append(json_packet)
+            
+            time_delta = update_at - (time.time_ns() // 1_000_000)
+            if time_delta > inner_loop_delay:
+                await asyncio.sleep_ms(inner_loop_delay)
+                print("+", end='')
+            else:
+                print("-", end='')
+                loop = False
+
+        cbor_packet = build_packet(packet_dict)
+
+        if not debug:
+            nus_tx_characteristic.write(cbor_packet, send_update=True)
+        else:
+            nus_tx_characteristic.write(json_packet, send_update=True)
+
+        count = (count + 1) % 65536
+        
+        now = time.time_ns() // 1_000_000
+        if now < update_at:
+            await asyncio.sleep_ms(update_at - now)
+            print("X", end='')
+        else:
+            await asyncio.sleep_ms(1) # yield to other tasks if needed
+            print("Y", end='')
+
+        update_at += update_interval
 
 # Serially wait for connections. Don't advertise while a central is
 # connected.
@@ -226,11 +307,48 @@ async def peripheral_task():
     while True:
         async with await aioble.advertise(
             _ADV_INTERVAL_MS,
-            name=sensor_name,
+            name=payload_name,
             services=[_WENET_SERVICE_UUID],
         ) as connection:
             print("Connection from", connection.device)
             await connection.disconnected(timeout_ms=None)
+
+# SD card writer task
+async def sd_write_task():
+    global sd_queue
+    while True:
+        try:
+            spi = SPI(0, sck=Pin(18), mosi=Pin(19), miso=Pin(16))
+            cs = Pin(17)
+
+            _sd = sdcard.SDCard(spi=spi, cs=cs, baudrate=24000000)
+
+            vfs.mount(_sd, '/sd')
+
+        except Exception as e:
+            print("Unable to set up SD card!")
+            print(e)
+            sd_queue.clear()
+
+        try:
+            with open('/sd/data_log.json', 'a') as f:
+                while True:
+                    print(time.time_ns() // 1_000_000)
+                    while len(sd_queue):
+                        data = sd_queue.pop(0)
+                        f.write(f"{data}\n")
+
+                    print(time.time_ns() // 1_000_000)
+                    # Wait 10 seconds for next round of data
+
+                    await asyncio.sleep(10)
+
+        except Exception as e:
+            print(e)
+            sd_queue.clear()
+            await asyncio.sleep(10)
+    
+
 
 async def main():
     global lsm
@@ -260,8 +378,14 @@ async def main():
             else:
                 print(f"Unknown device detected at 0x{d:02x}")
 
-    t1 = asyncio.create_task(sensor_task())
-    t2 = asyncio.create_task(peripheral_task())
-    await asyncio.gather(t1, t2)
+    task_list = []
+
+    task_list.append(asyncio.create_task(sensor_task()))
+    task_list.append(asyncio.create_task(peripheral_task()))
+    task_list.append(asyncio.create_task(sd_write_task()))
+    if lsm:
+        task_list.append(asyncio.create_task(sensor_task_lsm6dso()))
+
+    await asyncio.gather(*task_list)
 
 asyncio.run(main())

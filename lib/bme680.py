@@ -45,13 +45,13 @@ def _read24(arr):
 class Adafruit_BME680:
   def __init__(self, *, refresh_rate=10):
     self._write(_BME680_REG_SOFTRESET, [0xB6])
-    time.sleep(0.005)
+    time.sleep_ms(5)
     chip_id = self._read_byte(_BME680_REG_CHIPID)
     if chip_id != _BME680_CHIPID:
       raise RuntimeError('Failed 0x%x' % chip_id)
     self._read_calibration()
-    self._write(_BME680_BME680_RES_HEAT_0, [0x73])
-    self._write(_BME680_BME680_GAS_WAIT_0, [0x65])
+    #self._write(_BME680_BME680_RES_HEAT_0, [0x73])
+    #self._write(_BME680_BME680_GAS_WAIT_0, [0x65])
     self.sea_level_pressure = 1013.25
     self._pressure_oversample = 0b011
     self._temp_oversample = 0b100
@@ -65,6 +65,7 @@ class Adafruit_BME680:
     self._t_fine = None
     self._last_reading = 0
     self._min_refresh_time = 1000 / refresh_rate
+    self._run_gas = False
   @property
   def pressure_oversample(self):
     return _BME680_SAMPLERATES[self._pressure_oversample]
@@ -169,7 +170,8 @@ class Adafruit_BME680:
     self._write(_BME680_REG_CTRL_MEAS,
       [(self._temp_oversample << 5)|(self._pressure_oversample << 2)])
     self._write(_BME680_REG_CTRL_HUM, [self._humidity_oversample])
-    self._write(_BME680_REG_CTRL_GAS, [_BME680_RUNGAS])
+    if self._run_gas:
+      self._write(_BME680_REG_CTRL_GAS, [_BME680_RUNGAS])
     ctrl = self._read_byte(_BME680_REG_CTRL_MEAS)
     ctrl = (ctrl & 0xFC) | 0x01
     self._write(_BME680_REG_CTRL_MEAS, [ctrl])
@@ -177,7 +179,7 @@ class Adafruit_BME680:
     while not new_data:
       data = self._read(_BME680_REG_MEAS_STATUS, 15)
       new_data = data[0] & 0x80 != 0
-      time.sleep(0.005)
+      time.sleep_ms(5)
     self._last_reading = time.ticks_ms()
     self._adc_pres = _read24(data[2:5]) / 16
     self._adc_temp = _read24(data[5:8]) / 16
