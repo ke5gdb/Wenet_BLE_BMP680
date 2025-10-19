@@ -19,7 +19,7 @@ from lsm6dsox import LSM6DSOX
 from lis3mdl import LIS3MDL
 from bme680 import BME680_I2C
 
-payload_name = "XB-RPT"
+payload_name = "2x BMEs"
 
 # BLE Update rate (in ms)
 update_interval = 500
@@ -49,7 +49,7 @@ aioble.register_services(temp_service, nus_service)
 
 # Initialize interfaces
 rtc = RTC()
-i2c = I2C(0, scl=Pin(5), sda=Pin(4), freq=100000)
+i2c = I2C(1, scl=Pin(7), sda=Pin(6), freq=100000)
 led = Pin('LED', Pin.OUT)
 ow = OneWire(Pin(21))
 ds = DS18X20(ow)
@@ -59,7 +59,8 @@ sd_queue = []
 
 lsm = None
 lis = None
-bme = None
+bme_76 = None
+bme_77 = None
 
 debug = False
 
@@ -145,11 +146,11 @@ async def sensor_task():
         Pin('WL_GPIO1', Pin.OUT).on()
         
         # Get ADC values, scale as needed
-        adc0 = get_adc(0)
+        # adc0 = get_adc(0)
         # adc1 = get_adc(1)
         # adc2 = get_adc(2)
 
-        vbatt = (get_adc(0) + 60) * vbatt_scale
+        # vbatt = (get_adc(0) + 60) * vbatt_scale
 
         packet_dict = {
             # Universal
@@ -161,10 +162,10 @@ async def sensor_task():
             'pi_temp' : int(get_core_temp()),
 
             # ADC inputs
-            'adc0' : adc0,
+            # 'adc0' : adc0,
             # 'adc1' : adc1,
             # 'adc2' : adc2
-            'vbatt' : vbatt
+            # 'vbatt' : vbatt
         }
 
         # Get data from LIS3MDL magnetometer/compass, if available 
@@ -183,24 +184,44 @@ async def sensor_task():
                 print("LIS3MDL communications error!")
 
         # Get data from BME680, if available
-        if bme:
+        if bme_76:
             try:
-                bme._perform_reading()
-                bme_temp = bme.temperature
-                bme_pressure = bme.pressure
-                bme_humidity = bme.humidity
+                bme_76._perform_reading()
+                bme_temp = bme_76.temperature
+                bme_pressure = bme_76.pressure
+                bme_humidity = bme_76.humidity
                 # bme_gas = bme.gas
 
                 bme_dict = {
-                    'temp' : bme_temp,
-                    'pres' : bme_pressure,
-                    'humi' : bme_humidity,
+                    'temp_76' : bme_temp,
+                    'pres_76' : bme_pressure,
+                    'humi_76' : bme_humidity,
                     # 'gas' : bme_gas
                 }
 
                 packet_dict.update(bme_dict)
             except:
-                print("BME680 communications error!")
+                print("BME680 0x76 communications error!")
+
+                # Get data from BME680, if available
+        if bme_77:
+            try:
+                bme_77._perform_reading()
+                bme_temp = bme_77.temperature
+                bme_pressure = bme_77.pressure
+                bme_humidity = bme_77.humidity
+                # bme_gas = bme.gas
+
+                bme_dict = {
+                    'temp_77' : bme_temp,
+                    'pres_77' : bme_pressure,
+                    'humi_77' : bme_humidity,
+                    # 'gas' : bme_gas
+                }
+
+                packet_dict.update(bme_dict)
+            except:
+                print("BME680 0x77 communications error!")
 
         if len(ow_roms) > 0:
             for rom in ow_roms:
@@ -220,7 +241,7 @@ async def sensor_task():
 
         print(json_packet)
         
-        sd_queue.append(json_packet + '\n')
+        # sd_queue.append(json_packet + '\n')
 
         count = (count + 1) % 65536
 
@@ -301,7 +322,7 @@ async def sensor_task_lsm6dso():
 
             print(json_packet)
             
-            sd_queue.append(json_packet + '\n')
+            # sd_queue.append(json_packet + '\n')
             
             time_delta = update_at - (time.time_ns() // 1_000_000)
             if time_delta > inner_loop_delay:
@@ -387,7 +408,8 @@ async def sd_write_task():
 async def main():
     global lsm
     global lis
-    global bme
+    global bme_76
+    global bme_77
     global ow_roms
 
     print("Checking for I2C devices...")
@@ -407,9 +429,12 @@ async def main():
             elif d == 0x6a:
                 print("LSM6DSOX detected!")
                 lsm = LSM6DSOX(i2c)
+            elif d == 0x76:
+                print("BME680 detected! (0x76)")
+                bme_76 = BME680_I2C(i2c, address=0x77)
             elif d == 0x77:
-                print("BME680 detected!")
-                bme = BME680_I2C(i2c, address=0x77)
+                print("BME680 detected! (0x77)")
+                bme_77 = BME680_I2C(i2c, address=0x77)
             else:
                 print(f"Unknown device detected at 0x{d:02x}")
 
@@ -424,7 +449,7 @@ async def main():
 
     task_list.append(asyncio.create_task(sensor_task()))
     task_list.append(asyncio.create_task(peripheral_task()))
-    task_list.append(asyncio.create_task(sd_write_task()))
+    # task_list.append(asyncio.create_task(sd_write_task()))
     if lsm:
         task_list.append(asyncio.create_task(sensor_task_lsm6dso()))
 
