@@ -6,17 +6,20 @@ import cbor2
 import json
 import time
 from micropython import const
-from machine import Pin, ADC, mem32, RTC, I2C, SPI
+from machine import Pin, ADC, mem32, RTC, I2C, SPI, WDT
 import rp2
 import sdcard
 import vfs
+
+from onewire import OneWire
+from ds18x20 import DS18X20
 
 from pcf8523 import PCF8523
 from lsm6dsox import LSM6DSOX
 from lis3mdl import LIS3MDL
 from bme680 import BME680_I2C
 
-payload_name = "Payload Name"
+payload_name = "XB-RPT"
 
 # BLE Update rate (in ms)
 update_interval = 500
@@ -48,6 +51,10 @@ aioble.register_services(temp_service, nus_service)
 rtc = RTC()
 i2c = I2C(0, scl=Pin(5), sda=Pin(4), freq=100000)
 led = Pin('LED', Pin.OUT)
+ow = OneWire(Pin(21))
+ds = DS18X20(ow)
+ow_roms = []
+
 sd_queue = []
 
 lsm = None
@@ -55,6 +62,8 @@ lis = None
 bme = None
 
 debug = False
+
+wdt = WDT(timeout=7500)
 
 def build_packet(packet_dict):
     packet = cbor2.dumps(packet_dict)
@@ -108,8 +117,19 @@ async def sensor_task():
     global debug
     global sd_queue
 
+    task_update_interval = update_interval
+
+    vbatt_scale = (3.3*(2.68+11.97))/(2.68*(4096)) # 11.97k over 2.68k divider
+
+    # OneWire device stuff, if available
+    if len(ow_roms) > 0:
+        if task_update_interval < 750:
+            task_update_interval = 750
+        ds.convert_temp()
+        await asyncio.sleep_ms(750)
+
     now = time.time_ns() // 1_000_000
-    update_at = now - (now % update_interval) + update_interval
+    update_at = now - (now % task_update_interval) + task_update_interval
 
     while True:
         timestamp = get_iso_timestamp()
@@ -126,8 +146,10 @@ async def sensor_task():
         
         # Get ADC values, scale as needed
         adc0 = get_adc(0)
-        adc1 = get_adc(1)
-        adc2 = get_adc(2)
+        # adc1 = get_adc(1)
+        # adc2 = get_adc(2)
+
+        vbatt = (get_adc(0) + 60) * vbatt_scale
 
         packet_dict = {
             # Universal
@@ -135,13 +157,14 @@ async def sensor_task():
             'payload' : payload_name,
             'id' : sensor_name,
             'count' : count,
-            'batt' : get_batt(), 
+            'v_in' : get_batt(), 
             'pi_temp' : int(get_core_temp()),
 
             # ADC inputs
             'adc0' : adc0,
-            'adc1' : adc1,
-            'adc2' : adc2
+            # 'adc1' : adc1,
+            # 'adc2' : adc2
+            'vbatt' : vbatt
         }
 
         # Get data from LIS3MDL magnetometer/compass, if available 
@@ -179,6 +202,11 @@ async def sensor_task():
             except:
                 print("BME680 communications error!")
 
+        if len(ow_roms) > 0:
+            for rom in ow_roms:
+                addr = ''.join(f'{byte:02x}' for byte in rom[-2:])
+                packet_dict.update({f'temp-{addr}' : ds.read_temp(rom)})
+
         # Revert PSU mode to more efficient mode
         Pin('WL_GPIO1', Pin.OUT).off()
         
@@ -192,16 +220,16 @@ async def sensor_task():
 
         print(json_packet)
         
-        sd_queue.append(json_packet)
+        sd_queue.append(json_packet + '\n')
 
         count = (count + 1) % 65536
 
         # If debug, blip LED
         if debug:
             led.on()
-            await asyncio.sleep_ms(int(update_interval / 5))
+            await asyncio.sleep_ms(int(task_update_interval / 5))
             led.off()
-            await asyncio.sleep_ms(int(update_interval * 4 / 5))
+            await asyncio.sleep_ms(int(task_update_interval * 4 / 5))
         else:
             led.toggle()
             
@@ -211,12 +239,13 @@ async def sensor_task():
             else:
                 await asyncio.sleep_ms(1)
 
-        update_at += update_interval
+        update_at += task_update_interval
+        wdt.feed()
 
 async def sensor_task_lsm6dso():
     sensor_name = 'LSM6DSOX'
 
-    inner_loop_delay = 25
+    inner_loop_delay = 50
 
     global debug
     global sd_queue
@@ -270,16 +299,14 @@ async def sensor_task_lsm6dso():
         
             json_packet = json.dumps(packet_dict)
 
-            # print(json_packet)
+            print(json_packet)
             
-            sd_queue.append(json_packet)
+            sd_queue.append(json_packet + '\n')
             
             time_delta = update_at - (time.time_ns() // 1_000_000)
             if time_delta > inner_loop_delay:
                 await asyncio.sleep_ms(inner_loop_delay)
-                print("+", end='')
             else:
-                print("-", end='')
                 loop = False
 
         cbor_packet = build_packet(packet_dict)
@@ -294,12 +321,11 @@ async def sensor_task_lsm6dso():
         now = time.time_ns() // 1_000_000
         if now < update_at:
             await asyncio.sleep_ms(update_at - now)
-            print("X", end='')
         else:
             await asyncio.sleep_ms(1) # yield to other tasks if needed
-            print("Y", end='')
 
         update_at += update_interval
+        wdt.feed()
 
 # Serially wait for connections. Don't advertise while a central is
 # connected.
@@ -318,10 +344,11 @@ async def sd_write_task():
     global sd_queue
     while True:
         try:
-            spi = SPI(0, sck=Pin(18), mosi=Pin(19), miso=Pin(16))
+            spi = SPI(0, sck=Pin(18), mosi=Pin(19), miso=Pin(16), baudrate=24000000)
             cs = Pin(17)
 
             _sd = sdcard.SDCard(spi=spi, cs=cs, baudrate=24000000)
+            print("sd init complete, moutning vfs")
 
             vfs.mount(_sd, '/sd')
 
@@ -333,20 +360,27 @@ async def sd_write_task():
         try:
             with open('/sd/data_log.json', 'a') as f:
                 while True:
-                    print(time.time_ns() // 1_000_000)
+                    # t1 = time.time_ns() // 1_000_000
+                    buf = ''
+                    # data_length = 0
                     while len(sd_queue):
                         data = sd_queue.pop(0)
-                        f.write(f"{data}\n")
-
-                    print(time.time_ns() // 1_000_000)
+                        # f.write(data)
+                        # data_length += len(data)
+                        buf = buf + data
+                    # print(data_length)
+                    f.write(buf)
+                    sd_queue.clear()
+                    # t2 = time.time_ns() // 1_000_000
+                    # print(f"{(t2 - t1)}, {(data_length / (t2 - t1))}")
+ 
                     # Wait 10 seconds for next round of data
-
-                    await asyncio.sleep(10)
+                    await asyncio.sleep(1)
 
         except Exception as e:
             print(e)
             sd_queue.clear()
-            await asyncio.sleep(10)
+            await asyncio.sleep(1)
     
 
 
@@ -354,6 +388,7 @@ async def main():
     global lsm
     global lis
     global bme
+    global ow_roms
 
     print("Checking for I2C devices...")
     devices = i2c.scan()
@@ -377,6 +412,13 @@ async def main():
                 bme = BME680_I2C(i2c, address=0x77)
             else:
                 print(f"Unknown device detected at 0x{d:02x}")
+
+    print("Checking for OneWire devices...")
+    ow_roms = ds.scan()
+    if len(ow_roms) > 0:
+        for rom in ow_roms:
+            addr = ''.join(f'{byte:02x}' for byte in rom)
+            print(f"0x{addr}")
 
     task_list = []
 
