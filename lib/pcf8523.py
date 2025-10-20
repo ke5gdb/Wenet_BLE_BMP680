@@ -70,7 +70,7 @@ class PCF8523:
         # Enable battery switchover, set lost_power to false
         buffer[0] = 0x02
         buffer[1] = 0b00000000
-        self._i2c.writeto(0x68, buffer[0:1])
+        self._i2c.writeto(0x68, buffer[0:2])
 
         buffer[0] = _bin2bcd(value[6]) & 0x7F  # format conversions # Second
         buffer[1] = _bin2bcd(value[5]) # Minute
