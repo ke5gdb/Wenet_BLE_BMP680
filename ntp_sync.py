@@ -8,8 +8,8 @@ wdt = WDT(timeout=7500)
 wdt.feed()
 
 # Wi-Fi credentials
-SSID = 'DCARALAN' # Change me!
-PASSWORD = 'W5NGUW5NGU' # Change me too!
+SSID = '' # Change me!
+PASSWORD = '' # Change me too!
 
 i2c = I2C(0, scl=Pin(5), sda=Pin(4), freq=100000)
 i2c_rtc = PCF8523(i2c)
@@ -26,6 +26,7 @@ while not wlan.isconnected():
     time.sleep(1)
     print(".", end='')
     wdt.feed()
+print(wlan.ifconfig())
 print()
 print("Connected to Wi-Fi")
 
