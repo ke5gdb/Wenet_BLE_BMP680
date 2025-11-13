@@ -19,7 +19,7 @@ from lis3mdl import LIS3MDL
 from bmp280 import BMP280
 from bme680 import BME680_I2C
 
-payload_name = "W5ADC_Neck"
+payload_name = "RAB_HAT"
 
 # BLE Update rate (in ms)
 update_interval = 500
