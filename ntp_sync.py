@@ -1,11 +1,8 @@
-from machine import I2C, RTC, Pin, WDT
+from machine import I2C, RTC, Pin
 import network
 import ntptime
 import time
 from pcf8523 import PCF8523
-
-wdt = WDT(timeout=7500)
-wdt.feed()
 
 # Wi-Fi credentials
 SSID = '' # Change me!
@@ -25,7 +22,6 @@ wlan.connect(SSID, PASSWORD)
 while not wlan.isconnected():
     time.sleep(1)
     print(".", end='')
-    wdt.feed()
 print(wlan.ifconfig())
 print()
 print("Connected to Wi-Fi")
@@ -81,4 +77,3 @@ print("I2C RTC synchronized")
 while True:
     print(f"I2C RTC: {i2c_rtc.datetime}")
     time.sleep(1)
-    wdt.feed()
