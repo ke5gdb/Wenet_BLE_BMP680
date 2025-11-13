@@ -3,10 +3,9 @@ import os
 import aioble
 import bluetooth
 import cbor2
-import json
 import time
 from micropython import const
-from machine import Pin, ADC, mem32, RTC, I2C, SPI, WDT
+from machine import Pin, ADC, mem32, RTC, I2C, SPI
 import rp2
 import sdcard
 import vfs
@@ -17,9 +16,10 @@ from ds18x20 import DS18X20
 from pcf8523 import PCF8523
 from lsm6dsox import LSM6DSOX
 from lis3mdl import LIS3MDL
+from bmp280 import BMP280
 from bme680 import BME680_I2C
 
-payload_name = "BalloonNeck"
+payload_name = "RAB_HAT"
 
 # BLE Update rate (in ms)
 update_interval = 500
@@ -59,11 +59,10 @@ sd_queue = []
 
 lsm = None
 lis = None
+bmp = None
 bme = None
 
 debug = False
-
-wdt = WDT(timeout=7500)
 
 def build_packet(packet_dict):
     packet = cbor2.dumps(packet_dict)
@@ -111,15 +110,15 @@ def get_batt():
     return reading 
 
 async def sensor_task():
-    sensor_name = '1'
+    sensor_name = 'ENV'
     
-    count = 0
+    count = -1
     global debug
     global sd_queue
 
     task_update_interval = update_interval
 
-    vbatt_scale = (3.3*(2.68+11.97))/(2.68*(4096)) # 11.97k over 2.68k divider
+    # vbatt_scale = (3.3*(2.68+11.97))/(2.68*(4096)) # 11.97k over 2.68k divider
 
     # OneWire device stuff, if available
     if len(ow_roms) > 0:
@@ -151,13 +150,16 @@ async def sensor_task():
 
         # vbatt = (get_adc(0) + 60) * vbatt_scale
 
+        batt = get_batt()
+        core_temp = int(get_core_temp())
+
         packet_dict = {
             # Universal
             'time' : timestamp,
             'id' : payload_name + '_' + sensor_name,
             'count' : count,
-            'v_in' : get_batt(), 
-            'pi_temp' : int(get_core_temp()),
+            'v_in' : batt, 
+            'pi_temp' : core_temp,
 
             # ADC inputs
             # 'adc0' : adc0,
@@ -165,6 +167,8 @@ async def sensor_task():
             # 'adc2' : adc2
             # 'vbatt' : vbatt
         }
+
+        csv_data = f"{timestamp},{payload_name}_{sensor_name},{count},{batt},{core_temp},"
 
         # Get data from LIS3MDL magnetometer/compass, if available 
         if lis:
@@ -176,10 +180,26 @@ async def sensor_task():
                     'mag_y' : mag_y,
                     'mag_z' : mag_z
                 }
+                
+                csv_data += f"{mag_x},{mag_y},{mag_z},"
 
                 packet_dict.update(lis_dict)
             except:
                 print("LIS3MDL communications error!")
+
+        # Get data from BMP280, if available
+        if bmp:
+            try:
+                bmp_dict = {
+                    'bmp_temp' : bmp.temperature,
+                    'bmp_pres' : bmp.pressure,
+                }
+
+                csv_data += f"{bmp.temperature},{bmp.pressure},"
+
+                packet_dict.update(bmp_dict)
+            except:
+                print("BMP280 communications error!")
 
         # Get data from BME680, if available
         if bme:
@@ -191,11 +211,13 @@ async def sensor_task():
                 # bme_gas = bme.gas
 
                 bme_dict = {
-                    'temp' : bme_temp,
-                    'pres' : bme_pressure,
-                    'humi' : bme_humidity,
+                    'bme_temp' : bme_temp,
+                    'bme_pres' : bme_pressure,
+                    'bme_humi' : bme_humidity,
                     # 'gas' : bme_gas
                 }
+
+                csv_data += f"{bme_temp},{bme_pressure},{bme_humidity},"
 
                 packet_dict.update(bme_dict)
             except:
@@ -204,22 +226,20 @@ async def sensor_task():
         if len(ow_roms) > 0:
             for rom in ow_roms:
                 addr = ''.join(f'{byte:02x}' for byte in rom[-2:])
-                packet_dict.update({f'temp-{addr}' : ds.read_temp(rom)})
+                temp = ds.read_temp(rom)
+                csv_data += f"temp-{addr},{temp},"
+                packet_dict.update({f'temp-{addr}' : temp})
 
         # Revert PSU mode to more efficient mode
         Pin('WL_GPIO1', Pin.OUT).off()
         
         cbor_packet = build_packet(packet_dict)
-        json_packet = json.dumps(packet_dict)
 
-        if not debug:
-            nus_tx_characteristic.write(cbor_packet, send_update=True)
-        else:
-            nus_tx_characteristic.write(json_packet, send_update=True)
+        nus_tx_characteristic.write(cbor_packet, send_update=True)
 
-        print(json_packet)
+        print(csv_data)
         
-        sd_queue.append(json_packet + '\n')
+        sd_queue.append((packet_dict['id'], csv_data + '\n'))
 
         count = (count + 1) % 65536
 
@@ -239,7 +259,6 @@ async def sensor_task():
                 await asyncio.sleep_ms(1)
 
         update_at += task_update_interval
-        wdt.feed()
 
 async def sensor_task_lsm6dso():
     sensor_name = 'LSM6DSOX'
@@ -270,6 +289,8 @@ async def sensor_task_lsm6dso():
                 'count' : count,
             }
 
+            csv_data = f"{timestamp},{payload_name}_{sensor_name},{count},"
+
             try:
                 if lsm.free_fall():
                     print("-----> FREE FALL DETECTED <-----")
@@ -291,15 +312,15 @@ async def sensor_task_lsm6dso():
                     'imu_temp' : lsm_temperature
                 }
 
+                csv_data += f"{accel_x},{accel_y},{accel_z},{gyro_x},{gyro_y},{gyro_z},{lsm_free_fall_count},{lsm_temperature}"
+
                 packet_dict.update(lsm_dict)
             except:
                 print("LSM6DSO communications error!")
         
-            json_packet = json.dumps(packet_dict)
-
-            print(json_packet)
+            print(csv_data)
             
-            sd_queue.append(json_packet + '\n')
+            sd_queue.append((packet_dict['id'], csv_data + '\n'))
             
             time_delta = update_at - (time.time_ns() // 1_000_000)
             if time_delta > inner_loop_delay:
@@ -309,10 +330,7 @@ async def sensor_task_lsm6dso():
 
         cbor_packet = build_packet(packet_dict)
 
-        if not debug:
-            nus_tx_characteristic.write(cbor_packet, send_update=True)
-        else:
-            nus_tx_characteristic.write(json_packet, send_update=True)
+        nus_tx_characteristic.write(cbor_packet, send_update=True)
 
         count = (count + 1) % 65536
         
@@ -323,7 +341,6 @@ async def sensor_task_lsm6dso():
             await asyncio.sleep_ms(1) # yield to other tasks if needed
 
         update_at += update_interval
-        wdt.feed()
 
 # Serially wait for connections. Don't advertise while a central is
 # connected.
@@ -355,37 +372,43 @@ async def sd_write_task():
             print(e)
             sd_queue.clear()
 
+        files = {}
+
         try:
-            with open('/sd/data_log.json', 'a') as f:
-                while True:
-                    # t1 = time.time_ns() // 1_000_000
-                    buf = ''
-                    # data_length = 0
-                    while len(sd_queue):
-                        data = sd_queue.pop(0)
-                        # f.write(data)
-                        # data_length += len(data)
-                        buf = buf + data
-                    # print(data_length)
-                    f.write(buf)
-                    f.flush()
-                    sd_queue.clear()
-                    # t2 = time.time_ns() // 1_000_000
-                    # print(f"{(t2 - t1)}, {(data_length / (t2 - t1))}")
- 
-                    # Wait 10 seconds for next round of data
-                    await asyncio.sleep(1)
+            while True:
+                # t1 = time.time_ns() // 1_000_000
+                while len(sd_queue):
+                    dest, data = sd_queue.pop(0)
+
+                    if dest not in files:
+                        filename = f"/sd/data_log_{dest}.csv"
+                        files[dest] = open(filename, 'a')
+                        print(f"Opened file {filename}")
+                    
+                    files[dest].write(data)
+                    files[dest].flush()
+
+                sd_queue.clear()
+                # t2 = time.time_ns() // 1_000_000
+                # print(f"{(t2 - t1)}, {(data_length / (t2 - t1))}")
+
+                await asyncio.sleep(1)
 
         except Exception as e:
             print(e)
             sd_queue.clear()
             await asyncio.sleep(1)
+
+        finally:
+            for file in files:
+                file.close()
     
 
 
 async def main():
     global lsm
     global lis
+    global bmp
     global bme
     global ow_roms
 
@@ -406,9 +429,14 @@ async def main():
             elif d == 0x6a:
                 print("LSM6DSOX detected!")
                 lsm = LSM6DSOX(i2c)
-            elif d == 0x77:
-                print("BME680 detected!")
-                bme = BME680_I2C(i2c, address=0x77)
+            elif d == 0x76 or d == 0x77:
+                chip_id = i2c.readfrom_mem(d, 0xD0, 1)[0]
+                if chip_id == 0x58:
+                    print(f"BMP280 detected at 0x{d:02x}!")
+                    bmp = BMP280(i2c, addr=d)
+                elif chip_id == 0x61:
+                    print(f"BME680 detected at 0x{d:02x}!")
+                    bme = BME680_I2C(i2c, address=d)
             else:
                 print(f"Unknown device detected at 0x{d:02x}")
 
@@ -418,6 +446,8 @@ async def main():
         for rom in ow_roms:
             addr = ''.join(f'{byte:02x}' for byte in rom)
             print(f"0x{addr}")
+    else:
+        print("No OneWire devices found!")
 
     task_list = []
 
