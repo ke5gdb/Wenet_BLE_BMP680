@@ -18,6 +18,7 @@ from lsm6dsox import LSM6DSOX
 from lis3mdl import LIS3MDL
 from bmp280 import BMP280
 from bme680 import BME680_I2C
+from honeywell import HSC
 
 payload_name = "RAB_HAT"
 
@@ -61,6 +62,7 @@ lsm = None
 lis = None
 bmp = None
 bme = None
+hsc = None
 
 debug = False
 
@@ -72,10 +74,11 @@ def build_packet(packet_dict):
     assert(len(packet) <= 254)
     return packet
 
-def get_iso_timestamp():
+def get_timestamp():
     now = rtc.datetime()
     ms = time.time_ns() // 1_000_000 % 1000
-    return f"{now[0]}{now[1]:02}{now[2]:02}T{now[4]:02}{now[5]:02}{now[6]:02}.{ms:03}Z"
+    return (f"{now[0]}{now[1]:02}{now[2]:02}T{now[4]:02}{now[5]:02}{now[6]:02}.{ms:03}Z",
+            f"{now[0]}-{now[1]:02}-{now[2]:02} {now[4]:02}:{now[5]:02}:{now[6]:02}.{ms:03}")
 
 # ref https://github.com/raspberrypi/pico-micropython-examples/blob/master/adc/temperature.py
 def get_core_temp():     
@@ -131,7 +134,7 @@ async def sensor_task():
     update_at = now - (now % task_update_interval) + task_update_interval
 
     while True:
-        timestamp = get_iso_timestamp()
+        timestamp_iso, timestamp_csv = get_timestamp()
 
         # Offer a mechanism to send JSON strings via BLE UART for debugging using nRF app
         if rp2.bootsel_button():
@@ -155,7 +158,7 @@ async def sensor_task():
 
         packet_dict = {
             # Universal
-            'time' : timestamp,
+            'time' : timestamp_iso,
             'id' : payload_name + '_' + sensor_name,
             'count' : count,
             'v_in' : batt, 
@@ -168,7 +171,7 @@ async def sensor_task():
             # 'vbatt' : vbatt
         }
 
-        csv_data = f"{timestamp},{payload_name}_{sensor_name},{count},{batt},{core_temp},"
+        csv_data = f"{timestamp_csv},{payload_name}_{sensor_name},{count},{batt},{core_temp},"
 
         # Get data from LIS3MDL magnetometer/compass, if available 
         if lis:
@@ -222,6 +225,24 @@ async def sensor_task():
                 packet_dict.update(bme_dict)
             except:
                 print("BME680 communications error!")
+
+        # Get data from Honeywell HSC, if available
+        if hsc:
+            try:
+                hsc_temp = hsc.temperature
+                hsc_pres = hsc.pressure
+
+                hsc_dict = {
+                    'hsc_temp' : hsc_temp,
+                    'hsc_pres' : hsc_pres,
+                }
+
+                csv_data += f"{hsc_temp},{hsc_pres},"
+
+                packet_dict.update(hsc_dict)
+            except Exception as e:
+                print("Honeywell HSC communications error!")
+                print(e)
 
         if len(ow_roms) > 0:
             for rom in ow_roms:
@@ -280,16 +301,16 @@ async def sensor_task_lsm6dso():
     while True:
         loop = True
         while loop: 
-            timestamp = get_iso_timestamp()
+            timestamp_iso, timestamp_csv = get_timestamp()
 
             packet_dict = {
                 # Universal
-                'time' : timestamp,
+                'time' : timestamp_iso,
                 'id' : payload_name + '_' + sensor_name,
                 'count' : count,
             }
 
-            csv_data = f"{timestamp},{payload_name}_{sensor_name},{count},"
+            csv_data = f"{timestamp_csv},{payload_name}_{sensor_name},{count},"
 
             try:
                 if lsm.free_fall():
@@ -410,6 +431,7 @@ async def main():
     global lis
     global bmp
     global bme
+    global hsc
     global ow_roms
 
     print("Checking for I2C devices...")
@@ -419,6 +441,9 @@ async def main():
             if d == 0x1c:
                 print("LIS3MDL detected!")
                 lis = LIS3MDL(i2c)
+            elif d == 0x28:
+                print("Honeywell HSC detected!")
+                hsc = HSC(i2c)
             elif d == 0x68:
                 print("PCF8523 detected!")
                 i2c_rtc = PCF8523(i2c)
