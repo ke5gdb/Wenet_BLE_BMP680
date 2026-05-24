@@ -147,9 +147,9 @@ async def sensor_task():
         Pin('WL_GPIO1', Pin.OUT).on()
         
         # Get ADC values, scale as needed
-        # adc0 = get_adc(0)
-        # adc1 = get_adc(1)
-        # adc2 = get_adc(2)
+        adc0 = get_adc(0)
+        adc1 = get_adc(1)
+        adc2 = get_adc(2)
 
         # vbatt = (get_adc(0) + 60) * vbatt_scale
 
@@ -165,13 +165,13 @@ async def sensor_task():
             'pi_temp' : core_temp,
 
             # ADC inputs
-            # 'adc0' : adc0,
-            # 'adc1' : adc1,
-            # 'adc2' : adc2
+            'adc0' : adc0,
+            'adc1' : adc1,
+            'adc2' : adc2
             # 'vbatt' : vbatt
         }
 
-        csv_data = f"{timestamp_csv},{payload_name}_{sensor_name},{count},{batt},{core_temp},"
+        csv_data = f"{timestamp_csv},{payload_name}_{sensor_name},{count},{batt},{core_temp},{adc0},{adc1},{adc2},"
 
         # Get data from LIS3MDL magnetometer/compass, if available 
         if lis:
