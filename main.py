@@ -18,6 +18,7 @@ from lsm6dsox import LSM6DSOX
 from lis3mdl import LIS3MDL
 from bmp280 import BMP280
 from bme680 import BME680_I2C
+from honeywell import HSC
 
 payload_name = "RAB_HAT"
 
@@ -61,6 +62,7 @@ lsm = None
 lis = None
 bmp = None
 bme = None
+hsc = None
 
 debug = False
 
@@ -223,6 +225,24 @@ async def sensor_task():
                 packet_dict.update(bme_dict)
             except:
                 print("BME680 communications error!")
+
+        # Get data from Honeywell HSC, if available
+        if hsc:
+            try:
+                hsc_temp = hsc.temperature
+                hsc_pres = hsc.pressure
+
+                hsc_dict = {
+                    'hsc_temp' : hsc_temp,
+                    'hsc_pres' : hsc_pres,
+                }
+
+                csv_data += f"{hsc_temp},{hsc_pres},"
+
+                packet_dict.update(hsc_dict)
+            except Exception as e:
+                print("Honeywell HSC communications error!")
+                print(e)
 
         if len(ow_roms) > 0:
             for rom in ow_roms:
@@ -411,6 +431,7 @@ async def main():
     global lis
     global bmp
     global bme
+    global hsc
     global ow_roms
 
     print("Checking for I2C devices...")
@@ -420,6 +441,9 @@ async def main():
             if d == 0x1c:
                 print("LIS3MDL detected!")
                 lis = LIS3MDL(i2c)
+            elif d == 0x28:
+                print("Honeywell HSC detected!")
+                hsc = HSC(i2c)
             elif d == 0x68:
                 print("PCF8523 detected!")
                 i2c_rtc = PCF8523(i2c)
