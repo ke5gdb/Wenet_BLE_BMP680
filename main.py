@@ -19,6 +19,9 @@ from lis3mdl import LIS3MDL
 from bmp280 import BMP280
 from bme680 import BME680_I2C
 from honeywell import HSC
+from max31725 import MAX31725
+from hdc302x import HDC302x
+from bme280 import BME280
 
 payload_name = "RAB_HAT"
 
@@ -63,6 +66,9 @@ lis = None
 bmp = None
 bme = None
 hsc = None
+max31725 = None
+hdc302x = None
+bme280 = None
 
 debug = False
 
@@ -225,6 +231,45 @@ async def sensor_task():
                 packet_dict.update(bme_dict)
             except:
                 print("BME680 communications error!")
+
+        # Get data from BME280, if available
+        if bme280:
+            try:
+                bme280_temp = bme280.temperature
+                bme280_pres = bme280.pressure
+                bme280_humi = bme280.humidity
+
+                packet_dict.update({
+                    'bme280_temp': bme280_temp,
+                    'bme280_pres': bme280_pres,
+                    'bme280_humi': bme280_humi,
+                })
+                csv_data += f"{bme280_temp},{bme280_pres},{bme280_humi},"
+            except Exception as e:
+                print("BME280 communications error!")
+                print(e)
+
+        # Get data from HDC302x, if available
+        if hdc302x:
+            try:
+                hdc_temp, hdc_humi = hdc302x.measurements()
+
+                packet_dict.update({'hdc_temp': hdc_temp, 'hdc_humi': hdc_humi})
+                csv_data += f"{hdc_temp},{hdc_humi},"
+            except Exception as e:
+                print("HDC302x communications error!")
+                print(e)
+
+        # Get data from MAX31725, if available
+        if max31725:
+            try:
+                max_temp = max31725.temperature
+
+                packet_dict.update({'max31725_temp': max_temp})
+                csv_data += f"{max_temp},"
+            except Exception as e:
+                print("MAX31725 communications error!")
+                print(e)
 
         # Get data from Honeywell HSC, if available
         if hsc:
@@ -432,10 +477,14 @@ async def main():
     global bmp
     global bme
     global hsc
+    global max31725
+    global hdc302x
+    global bme280
     global ow_roms
 
     print("Checking for I2C devices...")
     devices = i2c.scan()
+    print(devices)
     if devices:
         for d in devices:
             if d == 0x1c:
@@ -444,24 +493,37 @@ async def main():
             elif d == 0x28:
                 print("Honeywell HSC detected!")
                 hsc = HSC(i2c)
+            elif 0x44 <= d <= 0x45:
+                print(f"HDC302x detected at 0x{d:02x}!")
+                hdc302x = HDC302x(i2c, address=d)
+            elif 0x48 <= d <= 0x4f:
+                print(f"MAX31725 detected at 0x{d:02x}!")
+                max31725 = MAX31725(i2c, address=d)
             elif d == 0x68:
                 print("PCF8523 detected!")
-                i2c_rtc = PCF8523(i2c)
-                rtc = RTC()
-                rtc.datetime(i2c_rtc.datetime)
-                now = rtc.datetime()
-                print(f"Synchronized CPU clock -- {now[0]}-{now[1]:02}-{now[2]:02} {now[4]:02}:{now[5]:02}:{now[6]:02}")
+                try:
+                    i2c_rtc = PCF8523(i2c)
+                    rtc.datetime(i2c_rtc.datetime)
+                    now = rtc.datetime()
+                    print(f"Synchronized CPU clock -- {now[0]}-{now[1]:02}-{now[2]:02} {now[4]:02}:{now[5]:02}:{now[6]:02}")
+                except Exception as e:
+                    print(f"PCF8523 sync failed: {e}")
             elif d == 0x6a:
                 print("LSM6DSOX detected!")
                 lsm = LSM6DSOX(i2c)
             elif d == 0x76 or d == 0x77:
                 chip_id = i2c.readfrom_mem(d, 0xD0, 1)[0]
-                if chip_id == 0x58:
+                if chip_id in (0x56, 0x57, 0x58):
                     print(f"BMP280 detected at 0x{d:02x}!")
                     bmp = BMP280(i2c, addr=d)
+                elif chip_id == 0x60:
+                    print(f"BME280 detected at 0x{d:02x}!")
+                    bme280 = BME280(i2c, addr=d)
                 elif chip_id == 0x61:
                     print(f"BME680 detected at 0x{d:02x}!")
                     bme = BME680_I2C(i2c, address=d)
+                else:
+                    print(f"Unknown Bosch chip 0x{chip_id:02x} at 0x{d:02x}")
             else:
                 print(f"Unknown device detected at 0x{d:02x}")
 
