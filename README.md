@@ -77,9 +77,16 @@ This copies `main.py`, `ntp_sync.py`, and the whole `lib/` directory. **`lib/` i
 optional** — it holds all the sensor drivers and the vendored `cbor2` encoder. If you copy
 files by hand, preserve the directory structure exactly, including `lib/cbor2/`.
 
-Only the Python needs to be on the device. `configurator.html`, this README, and the
-schematic run or live on your computer — if your upload sweeps them onto the Pico it's
-harmless, just a little wasted flash.
+Only device-side code needs to go across, and this repo is already set up that way.
+`README.md`, the schematic, and the `.code-workspace` are skipped because their extensions
+aren't in `micropico.syncFileTypes`. `configurator.html` and `ble_test.py` *would* have been
+uploaded — `.html` and `.py` are both sync types — but they run on your computer, not the
+Pico, so [.vscode/settings.json](.vscode/settings.json) lists them in
+`micropico.pyIgnore`. That leaves about 107 KB of Python for the board.
+
+If you add another host-side file, add it to `micropico.pyIgnore` too. Note that setting
+**replaces** the extension's default list rather than extending it, which is why the
+defaults are repeated there — deleting them would start syncing `.git` to the board.
 
 MicroPython runs `main.py` automatically on every boot, so the payload starts as soon as
 the upload finishes or the board is power-cycled.

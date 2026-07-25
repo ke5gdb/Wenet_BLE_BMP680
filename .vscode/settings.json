@@ -6,6 +6,29 @@
     },
     "python.terminal.activateEnvironment": false,
     "micropico.openOnStart": true,
+    // Files MicroPico must not upload. This list REPLACES the extension's default
+    // rather than extending it, so the defaults are repeated here -- dropping them
+    // would start syncing .git and .vscode to the board.
+    //
+    // README.md, the schematic PDF, and the .code-workspace are already excluded by
+    // micropico.syncFileTypes (md/pdf/code-workspace aren't in it). The two below are
+    // not: .html and .py are both sync types, but these run on your computer, not the
+    // Pico -- ble_test.py imports bleak, which does not exist in MicroPython.
+    "micropico.pyIgnore": [
+        "**/.picowgo",
+        "**/.micropico",
+        "**/.vscode",
+        "**/.gitignore",
+        "**/.git",
+        "**/.DS_Store",
+        "**/project.pico-go",
+        "**/env",
+        "**/venv",
+        "**/.venv",
+        "**/.idea",
+        "configurator.html",
+        "ble_test.py"
+    ],
     "python.analysis.typeshedPaths": [
         "~/.micropico-stubs/included",
         "${workspaceFolder}/lib"
