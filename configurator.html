@@ -1,0 +1,974 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Wenet Payload Configurator</title>
+<style>
+  /* ---- Palette: dataviz reference instance. Categorical slot 1 validated in both
+         modes (all checks pass). Status ramp is fixed/never-themed and is always
+         paired with a text label, per the icon+label rule. ---- */
+  :root {
+    color-scheme: light;
+    --plane:        #f9f9f7;
+    --surface:      #fcfcfb;
+    --ink:          #0b0b0b;
+    --ink-2:        #52514e;
+    --muted:        #898781;
+    --grid:         #e1e0d9;
+    --axis:         #c3c2b7;
+    --border:       rgba(11,11,11,0.10);
+    --series-1:     #2a78d6;
+    --good:         #0ca30c;
+    --warning:      #fab219;
+    --critical:     #d03b3b;
+    --track-normal:   #cde2fb;
+    --track-warning:  #fdecc4;
+    --track-critical: #f5cfcf;
+    --sans: system-ui, -apple-system, "Segoe UI", sans-serif;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:where(:not([data-theme="light"])) {
+      color-scheme: dark;
+      --plane:   #0d0d0d;
+      --surface: #1a1a19;
+      --ink:     #ffffff;
+      --ink-2:   #c3c2b7;
+      --muted:   #898781;
+      --grid:    #2c2c2a;
+      --axis:    #383835;
+      --border:  rgba(255,255,255,0.10);
+      --series-1: #3987e5;
+      --track-normal:   #184f95;
+      --track-warning:  #5c4208;
+      --track-critical: #5c1f1f;
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --plane:   #0d0d0d;
+    --surface: #1a1a19;
+    --ink:     #ffffff;
+    --ink-2:   #c3c2b7;
+    --muted:   #898781;
+    --grid:    #2c2c2a;
+    --axis:    #383835;
+    --border:  rgba(255,255,255,0.10);
+    --series-1: #3987e5;
+    --track-normal:   #184f95;
+    --track-warning:  #5c4208;
+    --track-critical: #5c1f1f;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 0 0 3rem;
+    background: var(--plane); color: var(--ink);
+    font-family: var(--sans); font-size: 15px; line-height: 1.5;
+  }
+  .wrap { max-width: 1080px; margin: 0 auto; padding: 0 1.25rem; }
+
+  header {
+    display: flex; align-items: baseline; gap: 1rem; flex-wrap: wrap;
+    padding: 1.5rem 0 1rem;
+  }
+  h1 { font-size: 1.25rem; font-weight: 600; margin: 0; }
+  header .sub { color: var(--ink-2); font-size: 0.875rem; }
+  header .spacer { flex: 1 1 auto; }
+
+  .card {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 10px; padding: 1.125rem 1.25rem; margin-bottom: 1rem;
+  }
+  .card > h2 {
+    font-size: 0.8125rem; font-weight: 600; text-transform: uppercase;
+    letter-spacing: 0.06em; color: var(--ink-2); margin: 0 0 0.875rem;
+  }
+
+  button {
+    font-family: inherit; font-size: 0.875rem; font-weight: 500;
+    padding: 0.5rem 0.875rem; border-radius: 7px;
+    border: 1px solid var(--border); background: var(--plane); color: var(--ink);
+    cursor: pointer;
+  }
+  button:hover:not(:disabled) { border-color: var(--axis); }
+  button:disabled { opacity: 0.45; cursor: not-allowed; }
+  button.primary { background: var(--series-1); border-color: var(--series-1); color: #fff; }
+  .row { display: flex; gap: 0.625rem; flex-wrap: wrap; align-items: center; }
+
+  .status { display: inline-flex; align-items: center; gap: 0.4375rem; font-size: 0.875rem; color: var(--ink-2); }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); flex: none; }
+  .dot.live  { background: var(--good); }
+  .dot.warn  { background: var(--warning); }
+  .dot.error { background: var(--critical); }
+
+  /* ---- stat tiles ---- */
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 0.875rem; }
+  .tile { border: 1px solid var(--border); border-radius: 9px; padding: 0.75rem 0.875rem; }
+  .tile .label { font-size: 0.75rem; color: var(--ink-2); }
+  .tile .value { font-size: 1.5rem; font-weight: 600; margin-top: 0.1875rem; }
+  /* Identifiers are strings, not figures — they need room to wrap, not display size. */
+  .tile .value.text { font-size: 1rem; line-height: 1.35; overflow-wrap: anywhere; }
+  .tile .unit { font-size: 0.8125rem; font-weight: 400; color: var(--muted); margin-left: 0.1875rem; }
+
+  /* ---- packet size meter ---- */
+  .meter-head { display: flex; justify-content: space-between; align-items: baseline; gap: 1rem; margin-bottom: 0.4375rem; }
+  .meter-head .label { font-size: 0.75rem; color: var(--ink-2); }
+  .meter-head .read { font-size: 0.875rem; font-variant-numeric: tabular-nums; }
+  .meter { height: 8px; border-radius: 4px; background: var(--track-normal); overflow: hidden; }
+  .meter > i { display: block; height: 100%; width: 0; background: var(--series-1); border-radius: 4px; transition: width 0.18s; }
+  .meter-state[data-state="warning"]  .meter { background: var(--track-warning); }
+  .meter-state[data-state="warning"]  .meter > i { background: var(--warning); }
+  .meter-state[data-state="critical"] .meter { background: var(--track-critical); }
+  .meter-state[data-state="critical"] .meter > i { background: var(--critical); }
+  .meter-note { font-size: 0.75rem; color: var(--ink-2); margin-top: 0.375rem; }
+
+  /* ---- chart ---- */
+  .chart-head { display: flex; gap: 0.75rem; align-items: center; flex-wrap: wrap; margin-bottom: 0.75rem; }
+  select, input[type="text"], input[type="number"] {
+    font-family: inherit; font-size: 0.875rem; padding: 0.4375rem 0.5rem;
+    border: 1px solid var(--border); border-radius: 7px;
+    background: var(--plane); color: var(--ink);
+  }
+  #chartHost { position: relative; }
+  svg.chart { display: block; width: 100%; height: auto; }
+  svg.chart .grid   { stroke: var(--grid); stroke-width: 1; }
+  svg.chart .axis   { stroke: var(--axis); stroke-width: 1; }
+  svg.chart .tick   { fill: var(--muted); font-size: 10px; font-variant-numeric: tabular-nums; }
+  svg.chart .line   { fill: none; stroke: var(--series-1); stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+  svg.chart .area   { fill: var(--series-1); opacity: 0.10; }
+  svg.chart .enddot { fill: var(--series-1); stroke: var(--surface); stroke-width: 2; }
+  svg.chart .endlab { fill: var(--ink); font-size: 11px; font-weight: 600; }
+  svg.chart .cross  { stroke: var(--axis); stroke-width: 1; }
+  .tip {
+    position: absolute; pointer-events: none; opacity: 0;
+    background: var(--surface); border: 1px solid var(--border); border-radius: 7px;
+    padding: 0.375rem 0.5rem; font-size: 0.75rem; white-space: nowrap;
+    box-shadow: 0 2px 10px rgba(0,0,0,0.14); transition: opacity 0.1s;
+  }
+  .tip b { font-variant-numeric: tabular-nums; }
+
+  /* ---- table ---- */
+  .tablewrap { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; font-size: 0.875rem; }
+  th, td { text-align: left; padding: 0.375rem 0.75rem 0.375rem 0; border-bottom: 1px solid var(--grid); }
+  th { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); font-weight: 600; }
+  td.num { font-variant-numeric: tabular-nums; }
+  td.key { font-family: var(--mono); font-size: 0.8125rem; }
+  td.unit { color: var(--muted); }
+
+  /* ---- console ---- */
+  pre.log {
+    margin: 0; max-height: 220px; overflow: auto;
+    font-family: var(--mono); font-size: 0.75rem; line-height: 1.45;
+    color: var(--ink-2); white-space: pre-wrap; word-break: break-all;
+  }
+
+  .field { display: flex; flex-direction: column; gap: 0.25rem; }
+  .field label { font-size: 0.75rem; color: var(--ink-2); }
+  .field .hint { font-size: 0.6875rem; color: var(--muted); }
+  .field .hint.bad { color: var(--critical); }
+  .grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 0.875rem; }
+
+  .banner {
+    border: 1px solid var(--border); border-left: 3px solid var(--warning);
+    border-radius: 7px; padding: 0.625rem 0.75rem; font-size: 0.8125rem;
+    color: var(--ink-2); margin-bottom: 1rem;
+  }
+  .banner strong { color: var(--ink); }
+  .banner.err { border-left-color: var(--critical); }
+  code { font-family: var(--mono); font-size: 0.8125em; }
+  .muted { color: var(--ink-2); }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>Wenet Payload Configurator</h1>
+  <span class="sub">RAB Pi Pico HAT</span>
+  <span class="spacer"></span>
+  <span class="status"><i class="dot" id="connDot"></i><span id="connText">Not connected</span></span>
+  <button id="themeBtn" title="Toggle light/dark">Theme</button>
+</header>
+
+<div id="support"></div>
+
+<!-- ------------------------------------------------------------------ connect -->
+<div class="card">
+  <h2>Connection</h2>
+  <div class="row">
+    <button class="primary" id="btBtn">Connect Bluetooth</button>
+    <button id="serBtn">Connect USB Serial</button>
+    <button id="dcBtn" disabled>Disconnect</button>
+    <span class="muted" style="font-size:0.8125rem">
+      Bluetooth streams decoded CBOR. Serial streams the CSV debug lines and is the only
+      transport that can write config.
+    </span>
+  </div>
+</div>
+
+<!-- ------------------------------------------------------------------- config -->
+<div class="card">
+  <h2>Configuration</h2>
+  <div class="grid2">
+    <div class="field">
+      <label for="cfgName">payload_name</label>
+      <input type="text" id="cfgName" maxlength="16" placeholder="RAB_HAT" autocomplete="off">
+      <span class="hint" id="nameHint">&nbsp;</span>
+    </div>
+    <div class="field">
+      <label for="cfgInterval">update_interval (ms)</label>
+      <input type="number" id="cfgInterval" min="50" max="60000" step="10" placeholder="500">
+      <span class="hint" id="intervalHint">50–60000 ms</span>
+    </div>
+  </div>
+  <div class="row" style="margin-top:0.875rem">
+    <button id="cfgRead" disabled>Read from device</button>
+    <button class="primary" id="cfgWrite" disabled>Write &amp; reboot</button>
+    <span class="muted" style="font-size:0.8125rem">
+      Requires serial. Writing interrupts the running payload and soft-reboots it.
+    </span>
+  </div>
+</div>
+
+<!-- ---------------------------------------------------------------- telemetry -->
+<div class="card">
+  <h2>Live telemetry</h2>
+  <div class="tiles" id="tiles"></div>
+
+  <div class="meter-state" id="meterState" data-state="normal" style="margin-top:1rem">
+    <div class="meter-head">
+      <span class="label">CBOR packet size</span>
+      <span class="read" id="meterRead">— / 254 bytes</span>
+    </div>
+    <div class="meter"><i id="meterFill"></i></div>
+    <div class="meter-note" id="meterNote">
+      Firmware warns above 228 bytes and asserts at 254 — the Wenet telemetry frame limit.
+    </div>
+  </div>
+</div>
+
+<!-- -------------------------------------------------------------------- chart -->
+<div class="card">
+  <h2>Field history</h2>
+  <div class="chart-head">
+    <select id="fieldSel"><option value="">— waiting for data —</option></select>
+    <label class="status" style="gap:0.375rem">
+      <input type="checkbox" id="jp3"> JP3 fitted (4:1 divider on ADC2)
+    </label>
+  </div>
+  <div id="chartHost">
+    <svg class="chart" id="chart" viewBox="0 0 720 240" preserveAspectRatio="none" role="img"
+         aria-label="Time history of the selected telemetry field"></svg>
+    <div class="tip" id="tip"></div>
+  </div>
+</div>
+
+<!-- -------------------------------------------------------------------- table -->
+<div class="card">
+  <h2>All fields <span class="muted" style="text-transform:none;letter-spacing:0">(table view)</span></h2>
+  <div class="tablewrap">
+    <table>
+      <thead><tr><th>Field</th><th>Value</th><th>Unit</th><th>Meaning</th></tr></thead>
+      <tbody id="fieldRows"><tr><td colspan="4" class="muted">No packets yet.</td></tr></tbody>
+    </table>
+  </div>
+</div>
+
+<!-- ------------------------------------------------------------------ console -->
+<div class="card">
+  <h2>Console</h2>
+  <pre class="log" id="log"></pre>
+</div>
+
+</div>
+<script>
+"use strict";
+
+/* =====================================================================
+   UUIDs — see main.py. The firmware advertises ONLY the Wenet service,
+   but writes its CBOR packets to the Nordic UART TX characteristic
+   (main.py:304 / main.py:399). The Wenet characteristic is registered
+   and never written, so we filter on Wenet and read from NUS. Web
+   Bluetooth requires NUS in optionalServices or access is denied.
+   ===================================================================== */
+const WENET_SERVICE = 'fb63feb8-31ad-451d-a587-9fc20f9c8add';
+const NUS_SERVICE   = '6e400001-b5a3-f393-e0a9-e50e24dcca9e';
+const NUS_TX_CHAR   = '6e400003-b5a3-f393-e0a9-e50e24dcca9e';
+
+const PACKET_LIMIT = 254;   // build_packet() assert
+const PACKET_WARN  = 228;   // build_packet() warning
+const MAX_NAME_LEN = 8;     // 31-byte adv payload - 3 flags - 18 UUID - 2 header
+const HISTORY      = 120;
+
+const $ = (id) => document.getElementById(id);
+
+/* ============================== logging ============================== */
+const logEl = $('log');
+function log(msg, kind) {
+  const t = new Date().toLocaleTimeString();
+  const prefix = kind === 'err' ? '!! ' : kind === 'tx' ? '>> ' : kind === 'rx' ? '<< ' : '   ';
+  logEl.textContent += `[${t}] ${prefix}${msg}\n`;
+  logEl.scrollTop = logEl.scrollHeight;
+}
+
+/* ============================== CBOR ================================
+   Decoder for the subset cbor2.dumps() emits: text keys, ints, floats,
+   byte strings, arrays, maps. Tolerates truncation, because a BLE
+   notification is capped at (MTU - 3) bytes and the payload can reach
+   254 — on a small MTU the tail is simply cut off.
+   ==================================================================== */
+const BREAK = Symbol('break');
+
+function f16(u) {
+  const sign = (u & 0x8000) ? -1 : 1;
+  const exp  = (u >> 10) & 0x1f;
+  const frac = u & 0x3ff;
+  if (exp === 0)  return sign * Math.pow(2, -24) * frac;
+  if (exp === 31) return frac ? NaN : sign * Infinity;
+  return sign * Math.pow(2, exp - 25) * (frac + 1024);
+}
+
+function decodeCbor(bytes) {
+  const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  let p = 0;
+  const need = (n) => { if (p + n > dv.byteLength) throw new RangeError('truncated'); };
+
+  function argument(ai) {
+    if (ai < 24) return ai;
+    if (ai === 24) { need(1); return dv.getUint8(p++); }
+    if (ai === 25) { need(2); const v = dv.getUint16(p); p += 2; return v; }
+    if (ai === 26) { need(4); const v = dv.getUint32(p); p += 4; return v; }
+    if (ai === 27) { need(8); const v = Number(dv.getBigUint64(p)); p += 8; return v; }
+    if (ai === 31) return -1;                       // indefinite length
+    throw new Error(`bad additional info ${ai}`);
+  }
+
+  function item() {
+    need(1);
+    const ib = dv.getUint8(p++);
+    const mt = ib >> 5, ai = ib & 0x1f;
+
+    if (mt === 7) {                                  // simple / float
+      if (ai === 20) return false;
+      if (ai === 21) return true;
+      if (ai === 22) return null;
+      if (ai === 23) return undefined;
+      if (ai === 25) { need(2); const v = f16(dv.getUint16(p)); p += 2; return v; }
+      if (ai === 26) { need(4); const v = dv.getFloat32(p);     p += 4; return v; }
+      if (ai === 27) { need(8); const v = dv.getFloat64(p);     p += 8; return v; }
+      if (ai === 31) return BREAK;
+      throw new Error(`unsupported simple value ${ai}`);
+    }
+
+    const n = argument(ai);
+    switch (mt) {
+      case 0: return n;
+      case 1: return -1 - n;
+      case 2: {
+        if (n < 0) throw new Error('indefinite byte string unsupported');
+        need(n);
+        const b = bytes.slice(p, p + n); p += n; return b;
+      }
+      case 3: {
+        if (n < 0) throw new Error('indefinite text string unsupported');
+        need(n);
+        const s = new TextDecoder().decode(bytes.subarray(p, p + n)); p += n; return s;
+      }
+      case 4: {
+        const arr = [];
+        if (n < 0) { for (;;) { const v = item(); if (v === BREAK) break; arr.push(v); } }
+        else       { for (let i = 0; i < n; i++) arr.push(item()); }
+        return arr;
+      }
+      case 5: {
+        const obj = {};
+        if (n < 0) {
+          for (;;) { const k = item(); if (k === BREAK) break; obj[k] = item(); }
+        } else {
+          for (let i = 0; i < n; i++) { const k = item(); obj[k] = item(); }
+        }
+        return obj;
+      }
+      case 6: return item();                         // tag — pass through
+    }
+    throw new Error(`bad major type ${mt}`);
+  }
+
+  const value = item();
+  return { value, consumed: p, complete: p === dv.byteLength };
+}
+
+/* Best-effort: pull whatever key/value pairs survive a truncated map. */
+function decodeCborPartial(bytes) {
+  try {
+    const r = decodeCbor(bytes);
+    return { obj: r.value, partial: false };
+  } catch (e) {
+    const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    if (dv.byteLength === 0 || (dv.getUint8(0) >> 5) !== 5) return { obj: null, partial: false, error: e };
+    // Re-walk the map one pair at a time, keeping what decodes cleanly.
+    const obj = {};
+    let lo = 1, ai = dv.getUint8(0) & 0x1f;
+    if (ai >= 24) lo += ai === 24 ? 1 : ai === 25 ? 2 : ai === 26 ? 4 : 8;
+    for (;;) {
+      let sub;
+      try { sub = decodeCbor(bytes.subarray(lo)); } catch { break; }
+      const k = sub.value; lo += sub.consumed;
+      let vsub;
+      try { vsub = decodeCbor(bytes.subarray(lo)); } catch { break; }
+      obj[k] = vsub.value; lo += vsub.consumed;
+      if (lo >= bytes.length) break;
+    }
+    return { obj: Object.keys(obj).length ? obj : null, partial: true, error: e };
+  }
+}
+
+/* ========================= field metadata ============================ */
+const UNITS = {
+  time: ['', 'Timestamp (ISO-ish, from the RTC)'],
+  id: ['', 'payload_name + task name'],
+  count: ['', 'Packet counter, wraps at 65536'],
+  v_in: ['V', 'VSYS via the internal divider (get_batt)'],
+  pi_temp: ['°C', 'RP2040 core temperature'],
+  adc0: ['counts', '12-bit, J5 on the HAT (direct 0–3.3 V)'],
+  adc1: ['counts', '12-bit, J4 on the HAT (direct 0–3.3 V)'],
+  adc2: ['counts', '12-bit, J2 on the HAT (divided only if JP3 is fitted)'],
+  vbatt: ['V', 'Scaled battery voltage'],
+  bmp_temp: ['°C', 'BMP280 — onboard on the HAT'],
+  bmp_pres: ['hPa', 'BMP280 — onboard on the HAT'],
+  bme_temp: ['°C', 'BME680'], bme_pres: ['hPa', 'BME680'], bme_humi: ['%RH', 'BME680'],
+  bme280_temp: ['°C', 'BME280'], bme280_pres: ['hPa', 'BME280'], bme280_humi: ['%RH', 'BME280'],
+  hdc_temp: ['°C', 'HDC302x'], hdc_humi: ['%RH', 'HDC302x'],
+  max31725_temp: ['°C', 'MAX31725'],
+  hsc_temp: ['°C', 'Honeywell HSC'], hsc_pres: ['', 'Honeywell HSC'],
+  mag_x: ['µT', 'LIS3MDL'], mag_y: ['µT', 'LIS3MDL'], mag_z: ['µT', 'LIS3MDL'],
+  a_x: ['m/s²', 'LSM6DSOX'], a_y: ['m/s²', 'LSM6DSOX'], a_z: ['m/s²', 'LSM6DSOX'],
+  g_x: ['°/s', 'LSM6DSOX'], g_y: ['°/s', 'LSM6DSOX'], g_z: ['°/s', 'LSM6DSOX'],
+  imu_temp: ['°C', 'LSM6DSOX'], fall_cnt: ['', 'LSM6DSOX free-fall events'],
+};
+function meta(k) {
+  if (UNITS[k]) return UNITS[k];
+  if (k.startsWith('temp-')) return ['°C', `OneWire DS18X20 (ROM …${k.slice(5)})`];
+  return ['', ''];
+}
+
+const ADC2_VOLTS_PER_COUNT = 0.003223;   // 10.2k/3.4k, JP3 fitted
+
+/* ============================ app state ============================== */
+const state = {
+  latest: {},               // last decoded packet
+  history: new Map(),       // field -> [{t, v}]
+  selected: '',
+  packets: 0,
+  lastSize: 0,
+  rateTimes: [],
+  transport: null,          // 'ble' | 'serial'
+  partial: false,
+};
+
+function pushSample(k, v) {
+  if (typeof v !== 'number' || !isFinite(v)) return;
+  let a = state.history.get(k);
+  if (!a) { a = []; state.history.set(k, a); }
+  a.push({ t: Date.now(), v });
+  if (a.length > HISTORY) a.shift();
+}
+
+function onPacket(obj, size, partial) {
+  state.latest = obj;
+  state.partial = !!partial;
+  state.packets++;
+  if (size != null) state.lastSize = size;
+
+  const now = Date.now();
+  state.rateTimes.push(now);
+  while (state.rateTimes.length && now - state.rateTimes[0] > 5000) state.rateTimes.shift();
+
+  for (const [k, v] of Object.entries(obj)) pushSample(k, v);
+
+  refreshFieldList();
+  renderTiles();
+  renderMeter();
+  renderTable();
+  renderChart();
+}
+
+/* ============================== render =============================== */
+function fmt(v, digits) {
+  if (typeof v !== 'number') return String(v);
+  if (!isFinite(v)) return String(v);
+  if (Number.isInteger(v)) return v.toLocaleString();
+  const d = digits != null ? digits : (Math.abs(v) < 10 ? 3 : Math.abs(v) < 1000 ? 2 : 1);
+  return v.toFixed(d);
+}
+
+function renderTiles() {
+  const rate = state.rateTimes.length > 1
+    ? (state.rateTimes.length - 1) / ((state.rateTimes[state.rateTimes.length - 1] - state.rateTimes[0]) / 1000)
+    : 0;
+  const tiles = [
+    ['Packets', state.packets.toLocaleString(), '', false],
+    ['Rate', rate ? rate.toFixed(2) : '—', 'pkt/s', false],
+    ['Payload id', state.latest.id != null ? state.latest.id : '—', '', true],
+    ['Counter', state.latest.count != null ? state.latest.count.toLocaleString() : '—', '', false],
+    ['Input voltage', state.latest.v_in != null ? fmt(state.latest.v_in, 2) : '—', 'V', false],
+    ['Core temp', state.latest.pi_temp != null ? fmt(state.latest.pi_temp, 0) : '—', '°C', false],
+  ];
+  $('tiles').innerHTML = tiles.map(([l, v, u, isText]) => `
+    <div class="tile">
+      <div class="label">${esc(l)}</div>
+      <div class="value${isText ? ' text' : ''}">${esc(v)}${u ? `<span class="unit">${esc(u)}</span>` : ''}</div>
+    </div>`).join('');
+}
+
+function renderMeter() {
+  const size = state.lastSize;
+  const pct = Math.min(100, (size / PACKET_LIMIT) * 100);
+  const st = size > PACKET_LIMIT ? 'critical' : size >= PACKET_WARN ? 'warning' : 'normal';
+  $('meterState').dataset.state = st;
+  $('meterFill').style.width = pct + '%';
+  $('meterRead').textContent = size ? `${size} / ${PACKET_LIMIT} bytes` : `— / ${PACKET_LIMIT} bytes`;
+
+  // Status colour is never the only signal — the note always spells the state out.
+  const notes = {
+    normal:   'Within budget. Firmware warns above 228 bytes and asserts at 254.',
+    warning:  '⚠ Near the limit — above 228 bytes. Adding another sensor risks tripping the assert at 254.',
+    critical: '✖ Over the 254-byte Wenet frame limit. Split the payload across two packets.',
+  };
+  $('meterNote').textContent = notes[st];
+}
+
+function renderTable() {
+  const keys = Object.keys(state.latest);
+  if (!keys.length) return;
+  const jp3 = $('jp3').checked;
+  $('fieldRows').innerHTML = keys.map((k) => {
+    const [unit, desc] = meta(k);
+    let v = state.latest[k];
+    let shown = (v instanceof Uint8Array)
+      ? [...v].map((b) => b.toString(16).padStart(2, '0')).join('')
+      : fmt(v);
+    let u = unit, d = desc;
+    if (k === 'adc2' && jp3 && typeof v === 'number') {
+      shown = `${fmt(v)} → ${(v * ADC2_VOLTS_PER_COUNT).toFixed(3)}`;
+      u = 'counts → V';
+      d = 'J2 with JP3 fitted: ×0.003223 V/count, 13.2 V full scale';
+    }
+    return `<tr><td class="key">${esc(k)}</td><td class="num">${esc(shown)}</td>
+            <td class="unit">${esc(u)}</td><td class="muted">${esc(d)}</td></tr>`;
+  }).join('');
+}
+
+function refreshFieldList() {
+  const numeric = [...state.history.keys()].filter((k) => state.history.get(k).length > 0);
+  const sel = $('fieldSel');
+  const current = state.selected || sel.value;
+  const wanted = numeric.join('|');
+  if (sel.dataset.keys === wanted) return;
+  sel.dataset.keys = wanted;
+  sel.innerHTML = numeric.map((k) => `<option value="${esc(k)}">${esc(k)}</option>`).join('')
+                  || '<option value="">— waiting for data —</option>';
+  const pick = numeric.includes(current) ? current
+             : numeric.includes('pi_temp') ? 'pi_temp' : numeric[0] || '';
+  sel.value = pick;
+  state.selected = pick;
+}
+
+/* ------------------------------- chart ------------------------------- */
+const CH = { w: 720, h: 240, l: 52, r: 58, t: 14, b: 26 };
+
+function niceTicks(min, max, count) {
+  if (min === max) { min -= 0.5; max += 0.5; }
+  const span = max - min;
+  const raw = span / count;
+  const mag = Math.pow(10, Math.floor(Math.log10(raw)));
+  const norm = raw / mag;
+  const step = (norm >= 5 ? 10 : norm >= 2 ? 5 : norm >= 1 ? 2 : 1) * mag;
+  const lo = Math.floor(min / step) * step;
+  const hi = Math.ceil(max / step) * step;
+  const out = [];
+  for (let v = lo; v <= hi + step * 1e-6; v += step) out.push(+v.toFixed(10));
+  return out;
+}
+
+function renderChart() {
+  const svg = $('chart');
+  const key = state.selected;
+  const data = key ? (state.history.get(key) || []) : [];
+  if (data.length < 2) {
+    svg.innerHTML = `<text class="tick" x="${CH.w / 2}" y="${CH.h / 2}" text-anchor="middle">
+      ${key ? 'Collecting samples…' : 'No data yet'}</text>`;
+    return;
+  }
+
+  const jp3 = $('jp3').checked && key === 'adc2';
+  const scale = jp3 ? ADC2_VOLTS_PER_COUNT : 1;
+  const vals = data.map((d) => d.v * scale);
+  const ticks = niceTicks(Math.min(...vals), Math.max(...vals), 4);
+  const yLo = ticks[0], yHi = ticks[ticks.length - 1];
+
+  const px = (i) => CH.l + (i / (data.length - 1)) * (CH.w - CH.l - CH.r);
+  const py = (v) => CH.h - CH.b - ((v - yLo) / (yHi - yLo || 1)) * (CH.h - CH.t - CH.b);
+
+  const pts = vals.map((v, i) => [px(i), py(v)]);
+  const linePath = pts.map((p, i) => `${i ? 'L' : 'M'}${p[0].toFixed(1)},${p[1].toFixed(1)}`).join('');
+  const areaPath = `${linePath}L${px(data.length - 1).toFixed(1)},${(CH.h - CH.b)}L${CH.l},${CH.h - CH.b}Z`;
+
+  const gridEls = ticks.map((tv) => {
+    const y = py(tv).toFixed(1);
+    return `<line class="grid" x1="${CH.l}" y1="${y}" x2="${CH.w - CH.r}" y2="${y}"/>
+            <text class="tick" x="${CH.l - 8}" y="${y}" text-anchor="end" dominant-baseline="middle">${fmtTick(tv)}</text>`;
+  }).join('');
+
+  const spanS = Math.round((data[data.length - 1].t - data[0].t) / 1000);
+  const last = vals[vals.length - 1];
+  const [unit] = jp3 ? ['V'] : meta(key);
+
+  svg.innerHTML = `
+    ${gridEls}
+    <line class="axis" x1="${CH.l}" y1="${CH.h - CH.b}" x2="${CH.w - CH.r}" y2="${CH.h - CH.b}"/>
+    <path class="area" d="${areaPath}"/>
+    <path class="line" d="${linePath}"/>
+    <circle class="enddot" cx="${pts[pts.length - 1][0].toFixed(1)}" cy="${pts[pts.length - 1][1].toFixed(1)}" r="4.5"/>
+    <text class="endlab" x="${(pts[pts.length - 1][0] + 9).toFixed(1)}" y="${pts[pts.length - 1][1].toFixed(1)}"
+          dominant-baseline="middle">${fmt(last)}${unit ? ' ' + unit : ''}</text>
+    <text class="tick" x="${CH.l}" y="${CH.h - 8}">−${spanS}s</text>
+    <text class="tick" x="${CH.w - CH.r}" y="${CH.h - 8}" text-anchor="end">now</text>
+    <rect id="hit" x="${CH.l}" y="${CH.t}" width="${CH.w - CH.l - CH.r}" height="${CH.h - CH.t - CH.b}" fill="transparent"/>
+  `;
+  wireHover(data, vals, px, py, unit);
+}
+
+function fmtTick(v) {
+  if (Number.isInteger(v)) return v.toLocaleString();
+  return Math.abs(v) < 10 ? v.toFixed(2) : v.toFixed(1);
+}
+
+function wireHover(data, vals, px, py, unit) {
+  const svg = $('chart'), tip = $('tip'), hit = svg.querySelector('#hit');
+  if (!hit) return;
+  const clear = () => { tip.style.opacity = 0; const c = svg.querySelector('.cross'); if (c) c.remove(); };
+
+  hit.addEventListener('pointerleave', clear);
+  hit.addEventListener('pointermove', (ev) => {
+    const box = svg.getBoundingClientRect();
+    const sx = (ev.clientX - box.left) * (CH.w / box.width);
+    let best = 0, bd = Infinity;
+    for (let i = 0; i < data.length; i++) {
+      const d = Math.abs(px(i) - sx);
+      if (d < bd) { bd = d; best = i; }
+    }
+    const cx = px(best), cy = py(vals[best]);
+    let cross = svg.querySelector('.cross');
+    if (!cross) {
+      cross = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+      cross.setAttribute('class', 'cross');
+      svg.insertBefore(cross, svg.querySelector('.area'));
+    }
+    cross.setAttribute('x1', cx); cross.setAttribute('x2', cx);
+    cross.setAttribute('y1', CH.t); cross.setAttribute('y2', CH.h - CH.b);
+
+    const ago = ((Date.now() - data[best].t) / 1000).toFixed(1);
+    tip.innerHTML = `<b>${esc(fmt(vals[best]))}${unit ? ' ' + esc(unit) : ''}</b><br>
+                     <span class="muted">${ago}s ago</span>`;
+    tip.style.opacity = 1;
+    const host = $('chartHost').getBoundingClientRect();
+    tip.style.left = Math.min(host.width - tip.offsetWidth - 4,
+                              Math.max(0, (cx / CH.w) * host.width - tip.offsetWidth / 2)) + 'px';
+    tip.style.top = Math.max(0, (cy / CH.h) * host.height - tip.offsetHeight - 10) + 'px';
+  });
+}
+
+function esc(s) {
+  return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+/* =========================== connection UI =========================== */
+function setConn(kind, text) {
+  $('connDot').className = 'dot' + (kind ? ' ' + kind : '');
+  $('connText').textContent = text;
+  const serial = state.transport === 'serial';
+  $('cfgRead').disabled = !serial;
+  $('cfgWrite').disabled = !serial;
+  $('dcBtn').disabled = !state.transport;
+  $('btBtn').disabled = !!state.transport;
+  $('serBtn').disabled = !!state.transport;
+}
+
+/* ============================= Bluetooth ============================= */
+let bleDevice = null;
+
+async function connectBle() {
+  try {
+    log('Requesting a BLE device advertising the Wenet service…');
+    bleDevice = await navigator.bluetooth.requestDevice({
+      filters: [{ services: [WENET_SERVICE] }],
+      optionalServices: [NUS_SERVICE],
+    });
+    bleDevice.addEventListener('gattserverdisconnected', () => {
+      if (state.transport === 'ble') { state.transport = null; setConn('error', 'Bluetooth disconnected'); log('BLE disconnected.', 'err'); }
+    });
+    log(`Connecting to "${bleDevice.name || '(unnamed)'}"…`);
+    const server = await bleDevice.gatt.connect();
+    const svc = await server.getPrimaryService(NUS_SERVICE);
+    const ch = await svc.getCharacteristic(NUS_TX_CHAR);
+    await ch.startNotifications();
+    ch.addEventListener('characteristicvaluechanged', (e) => {
+      const dv = e.target.value;
+      const bytes = new Uint8Array(dv.buffer, dv.byteOffset, dv.byteLength);
+      const { obj, partial, error } = decodeCborPartial(bytes);
+      if (!obj) { log(`CBOR decode failed (${bytes.length} B): ${error && error.message}`, 'err'); return; }
+      if (partial) log(`Partial packet — ${bytes.length} B decoded to ${Object.keys(obj).length} fields. Likely an ATT MTU smaller than the payload.`, 'err');
+      onPacket(obj, bytes.length, partial);
+    });
+    state.transport = 'ble';
+    setConn('live', `Bluetooth — ${bleDevice.name || 'connected'}`);
+    log('Subscribed to the Nordic UART TX characteristic. Streaming CBOR.');
+  } catch (e) {
+    log(`Bluetooth: ${e.message}`, 'err');
+    setConn('error', 'Bluetooth failed');
+    state.transport = null; setConn(null, 'Not connected');
+  }
+}
+
+/* ============================= Web Serial ============================
+   Two jobs on one port: stream the CSV debug lines, and drive the
+   MicroPython raw REPL to read/write config.json. `replMode` decides
+   which consumer sees incoming bytes.
+   ==================================================================== */
+let port = null, reader = null, writer = null, keepReading = false;
+let replMode = false, replBuf = '', lineBuf = '';
+
+const CTRL_A = '\x01', CTRL_B = '\x02', CTRL_C = '\x03', CTRL_D = '\x04';
+
+async function connectSerial() {
+  try {
+    port = await navigator.serial.requestPort();
+    await port.open({ baudRate: 115200 });
+    writer = port.writable.getWriter();
+    keepReading = true;
+    state.transport = 'serial';
+    setConn('live', 'USB serial — connected');
+    log('Serial open at 115200. The Pico is a USB CDC device, so the rate is nominal.');
+    readSerialLoop();
+  } catch (e) {
+    log(`Serial: ${e.message}`, 'err');
+    state.transport = null; setConn(null, 'Not connected');
+  }
+}
+
+async function readSerialLoop() {
+  const dec = new TextDecoder();
+  try {
+    reader = port.readable.getReader();
+    while (keepReading) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      const text = dec.decode(value, { stream: true });
+      if (replMode) { replBuf += text; continue; }
+      lineBuf += text;
+      let nl;
+      while ((nl = lineBuf.indexOf('\n')) >= 0) {
+        const line = lineBuf.slice(0, nl).replace(/\r$/, '');
+        lineBuf = lineBuf.slice(nl + 1);
+        if (line.trim()) handleSerialLine(line);
+      }
+    }
+  } catch (e) {
+    if (keepReading) log(`Serial read: ${e.message}`, 'err');
+  } finally {
+    try { reader && reader.releaseLock(); } catch {}
+  }
+}
+
+/* main.py prints csv_data (main.py:306). The first eight columns are fixed;
+   everything after depends on which sensors were detected, and there is no
+   header row, so trailing columns are surfaced positionally. */
+const CSV_HEAD = ['time', 'id', 'count', 'v_in', 'pi_temp', 'adc0', 'adc1', 'adc2'];
+
+function handleSerialLine(line) {
+  const cols = line.split(',').map((s) => s.trim()).filter((s, i, a) => !(i === a.length - 1 && s === ''));
+  const looksLikeCsv = cols.length >= CSV_HEAD.length && /^\d{4}-\d{2}-\d{2} /.test(cols[0]);
+  if (!looksLikeCsv) { log(line, 'rx'); return; }
+
+  const obj = {};
+  CSV_HEAD.forEach((k, i) => {
+    const raw = cols[i];
+    obj[k] = (k === 'time' || k === 'id') ? raw : (Number.isNaN(Number(raw)) ? raw : Number(raw));
+  });
+  cols.slice(CSV_HEAD.length).forEach((raw, i) => {
+    const n = Number(raw);
+    obj[Number.isNaN(n) ? `col${CSV_HEAD.length + i}` : `extra${i}`] = Number.isNaN(n) ? raw : n;
+  });
+  onPacket(obj, null, false);
+}
+
+async function sendRaw(s) { await writer.write(new TextEncoder().encode(s)); }
+
+function waitFor(needle, timeoutMs) {
+  return new Promise((resolve, reject) => {
+    const t0 = Date.now();
+    (function poll() {
+      const i = replBuf.indexOf(needle);
+      if (i >= 0) return resolve(i);
+      if (Date.now() - t0 > (timeoutMs || 4000)) return reject(new Error(`timed out waiting for ${JSON.stringify(needle)}`));
+      setTimeout(poll, 25);
+    })();
+  });
+}
+
+/* Run one snippet in the MicroPython raw REPL, return its stdout. */
+async function replExec(code) {
+  replMode = true; replBuf = '';
+  try {
+    await sendRaw(CTRL_C); await sendRaw(CTRL_C);         // interrupt main.py
+    await new Promise((r) => setTimeout(r, 120));
+    replBuf = '';
+    await sendRaw(CTRL_A);                                // enter raw REPL
+    await waitFor('raw REPL', 3000);
+    replBuf = '';
+    await sendRaw(code); await sendRaw(CTRL_D);            // submit + execute
+    await waitFor('OK', 4000);
+    // Response is: OK <stdout> \x04 <stderr> \x04 >
+    await waitFor('\x04', 6000);
+    const after = replBuf.slice(replBuf.indexOf('OK') + 2);
+    const parts = after.split('\x04');
+    return { out: (parts[0] || '').trim(), err: (parts[1] || '').trim() };
+  } finally {
+    try { await sendRaw(CTRL_B); } catch {}               // back to friendly REPL
+    replMode = false; replBuf = '';
+  }
+}
+
+async function readConfig() {
+  try {
+    log('Interrupting the payload to read config.json…', 'tx');
+    const { out, err } = await replExec(
+      "try:\n" +
+      "    print(open('config.json').read())\n" +
+      "except OSError:\n" +
+      "    print('__MISSING__')\n"
+    );
+    if (err) log(`Device stderr: ${err}`, 'err');
+    if (out.includes('__MISSING__')) {
+      log('No config.json on the device — it is running the defaults in main.py.');
+      $('cfgName').value = ''; $('cfgInterval').value = '';
+      validateName();
+      return;
+    }
+    log(`config.json: ${out}`, 'rx');
+    const cfg = JSON.parse(out);
+    if (typeof cfg.payload_name === 'string') $('cfgName').value = cfg.payload_name;
+    if (Number.isFinite(cfg.update_interval)) $('cfgInterval').value = cfg.update_interval;
+    validateName();
+    log('Config loaded into the form. The payload is stopped — write, or power-cycle to resume.');
+  } catch (e) {
+    log(`Read failed: ${e.message}`, 'err');
+  }
+}
+
+async function writeConfig() {
+  const name = $('cfgName').value.trim();
+  const interval = parseInt($('cfgInterval').value, 10);
+  if (name && name.length > MAX_NAME_LEN) {
+    log(`payload_name must be ${MAX_NAME_LEN} characters or fewer — the advertising payload has no room for more.`, 'err');
+    return;
+  }
+  if (!Number.isFinite(interval) || interval < 50 || interval > 60000) {
+    log('update_interval must be an integer from 50 to 60000 ms.', 'err');
+    return;
+  }
+  const cfg = {};
+  if (name) cfg.payload_name = name;
+  cfg.update_interval = interval;
+  const json = JSON.stringify(cfg);
+
+  // Ship the bytes as hex so no quoting or newline can corrupt the paste.
+  const hex = [...new TextEncoder().encode(json)].map((b) => b.toString(16).padStart(2, '0')).join('');
+  try {
+    log(`Writing config.json: ${json}`, 'tx');
+    const { out, err } = await replExec(
+      "import binascii\n" +
+      `open('config.json','wb').write(binascii.unhexlify('${hex}'))\n` +
+      "print('__WROTE__', open('config.json').read())\n"
+    );
+    if (err) { log(`Device stderr: ${err}`, 'err'); return; }
+    if (!out.includes('__WROTE__')) { log(`Unexpected reply: ${out}`, 'err'); return; }
+    log(`Verified on device: ${out.replace('__WROTE__', '').trim()}`, 'rx');
+    await sendRaw(CTRL_D);                                 // soft reboot
+    log('Soft reboot sent. main.py will reload and print its config line.');
+  } catch (e) {
+    log(`Write failed: ${e.message}`, 'err');
+  }
+}
+
+async function disconnect() {
+  keepReading = false;
+  try { reader && await reader.cancel(); } catch {}
+  try { writer && writer.releaseLock(); } catch {}
+  try { port && await port.close(); } catch {}
+  try { bleDevice && bleDevice.gatt.connected && bleDevice.gatt.disconnect(); } catch {}
+  port = reader = writer = bleDevice = null;
+  state.transport = null;
+  setConn(null, 'Not connected');
+  log('Disconnected.');
+}
+
+/* ============================== wiring =============================== */
+function validateName() {
+  const v = $('cfgName').value;
+  const bytes = 21 + 2 + new TextEncoder().encode(v).length;   // flags + UUID + header + name
+  const hint = $('nameHint');
+  if (!v) { hint.textContent = `Blank keeps main.py's default. Max ${MAX_NAME_LEN} chars.`; hint.classList.remove('bad'); return; }
+  const over = v.length > MAX_NAME_LEN;
+  hint.textContent = `${v.length}/${MAX_NAME_LEN} chars — advertising payload ${bytes}/31 bytes`
+    + (over ? ' · too long, aioble.advertise() would fail' : '');
+  hint.classList.toggle('bad', over);
+}
+
+$('btBtn').onclick = connectBle;
+$('serBtn').onclick = connectSerial;
+$('dcBtn').onclick = disconnect;
+$('cfgRead').onclick = readConfig;
+$('cfgWrite').onclick = writeConfig;
+$('cfgName').oninput = validateName;
+$('fieldSel').onchange = (e) => { state.selected = e.target.value; renderChart(); };
+$('jp3').onchange = () => { renderTable(); renderChart(); };
+$('themeBtn').onclick = () => {
+  const dark = document.documentElement.getAttribute('data-theme') === 'dark'
+    || (!document.documentElement.hasAttribute('data-theme') && matchMedia('(prefers-color-scheme: dark)').matches);
+  document.documentElement.setAttribute('data-theme', dark ? 'light' : 'dark');
+  renderChart();
+};
+
+/* Capability banner — both APIs need a secure context. */
+(function () {
+  const missing = [];
+  if (!navigator.bluetooth) missing.push('Web Bluetooth');
+  if (!navigator.serial) missing.push('Web Serial');
+  const host = $('support');
+  if (!missing.length) return;
+  const all = missing.length === 2;
+  host.innerHTML = `<div class="banner ${all ? 'err' : ''}">
+    <strong>${esc(missing.join(' and '))} unavailable in this browser.</strong>
+    Both need a Chromium browser (Chrome, Edge, Opera) and a secure context. Firefox and
+    Safari ship neither. If you opened this file directly and the buttons do nothing, serve it
+    over localhost instead: <code>python -m http.server</code>, then visit
+    <code>http://localhost:8000/configurator.html</code>.
+    ${all ? '' : ' The other transport still works.'}
+  </div>`;
+  if (!navigator.bluetooth) $('btBtn').disabled = true;
+  if (!navigator.serial) $('serBtn').disabled = true;
+})();
+
+validateName();
+renderTiles();
+renderMeter();
+renderChart();
+log('Ready. Connect over Bluetooth for decoded CBOR, or USB serial to also edit config.');
+</script>
+</body>
+</html>

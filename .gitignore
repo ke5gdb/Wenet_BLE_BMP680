@@ -1,0 +1,7 @@
+# Python bytecode — created if lib/ modules are imported by desktop CPython
+__pycache__/
+*.py[cod]
+
+# Device-side runtime config, written by configurator.html.
+# Per-payload and not meant to be shared; main.py falls back to its own defaults.
+config.json

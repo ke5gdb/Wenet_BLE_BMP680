@@ -1,5 +1,6 @@
 import asyncio
 import os
+import json
 import aioble
 import bluetooth
 import cbor2
@@ -27,6 +28,47 @@ payload_name = "RAB_HAT"
 
 # BLE Update rate (in ms)
 update_interval = 500
+
+# The advertising payload is 31 bytes: 3 for flags, 18 for the 128-bit Wenet service
+# UUID, and 2 of header for the name. That leaves 8 characters for payload_name -- a
+# longer name makes aioble.advertise() fail, which would take down every task.
+_MAX_NAME_LEN = 8
+
+# Optional overrides written by the web configurator (configurator.html). Anything
+# missing, unreadable, or out of range falls back to the values above, so a bad config
+# can't stop the payload from booting.
+def _load_config():
+    global payload_name, update_interval
+
+    try:
+        with open('config.json') as f:
+            cfg = json.load(f)
+    except OSError:
+        return  # no config file, defaults stand
+    except ValueError as e:
+        print(f"config.json is not valid JSON ({e}) -- using defaults")
+        return
+
+    if not isinstance(cfg, dict):
+        print("config.json is not an object -- using defaults")
+        return
+
+    name = cfg.get('payload_name')
+    if isinstance(name, str) and name:
+        if len(name) > _MAX_NAME_LEN:
+            print(f"payload_name '{name}' exceeds {_MAX_NAME_LEN} chars, truncating")
+            name = name[:_MAX_NAME_LEN]
+        payload_name = name
+
+    interval = cfg.get('update_interval')
+    if isinstance(interval, int) and not isinstance(interval, bool):
+        if 50 <= interval <= 60000:
+            update_interval = interval
+        else:
+            print(f"update_interval {interval} out of range (50-60000) -- ignoring")
+
+_load_config()
+print(f"Config: payload_name={payload_name} update_interval={update_interval}ms")
 
 _WENET_SERVICE_UUID = bluetooth.UUID('fb63feb8-31ad-451d-a587-9fc20f9c8add')
 _WENET_CHAR_UUID = bluetooth.UUID('3d235f0e-61f8-4455-89c6-2f7d73c33178')

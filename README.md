@@ -9,6 +9,9 @@ The firmware's default pinout targets the **RAB Pi Pico HAT** — see
 [the HAT](#the-rab-pi-pico-hat) below. It runs on a bare Pico W too, if you wire the
 peripherals yourself.
 
+[configurator.html](configurator.html) is a browser-based companion that reads the live
+telemetry and edits the payload's settings — see [Web configurator](#web-configurator).
+
 ## Quick start
 
 ### 1. What you need
@@ -41,14 +44,23 @@ bottom of the window. `Ctrl+Shift+P` → **MicroPico: Connect** if it doesn't.
 
 ### 4. Configure before uploading
 
-Two things to set:
-
-**[main.py](main.py#L26)** — name your payload. This becomes part of the BLE packet `id`
-and the CSV filename:
+**[main.py](main.py#L26)** — name your payload. This becomes part of the BLE packet `id`,
+the advertised BLE name, and the CSV filename:
 
 ```python
 payload_name = "RAB_HAT"
 ```
+
+**`payload_name` cannot exceed 8 characters.** The legacy BLE advertising payload is 31
+bytes: 3 for flags, 18 for the 128-bit Wenet service UUID, and 2 of header for the name,
+leaving 8. A longer name makes `aioble.advertise()` fail, which propagates out of
+`asyncio.gather()` and takes down every task — so it isn't a cosmetic limit. The loader
+truncates rather than let that happen.
+
+You don't have to edit the file for this: `payload_name` and `update_interval` can also be
+set from [the web configurator](#web-configurator), which writes a `config.json` that
+[main.py](main.py#L38-L70) reads at boot. Anything missing or invalid falls back to the
+values in the source, so a bad config can't stop the payload from booting.
 
 **[ntp_sync.py](ntp_sync.py#L8-L9)** — only needed if you have a PCF8523 RTC to set:
 
@@ -64,6 +76,10 @@ PASSWORD = ''  # Change me too!
 This copies `main.py`, `ntp_sync.py`, and the whole `lib/` directory. **`lib/` is not
 optional** — it holds all the sensor drivers and the vendored `cbor2` encoder. If you copy
 files by hand, preserve the directory structure exactly, including `lib/cbor2/`.
+
+Only the Python needs to be on the device. `configurator.html`, this README, and the
+schematic run or live on your computer — if your upload sweeps them onto the Pico it's
+harmless, just a little wasted flash.
 
 MicroPython runs `main.py` automatically on every boot, so the payload starts as soon as
 the upload finishes or the board is power-cycled.
@@ -87,12 +103,18 @@ That's a stock RAB HAT: `104` is the PCF8523 at 0x68, `118` is the onboard BMP28
 Addresses are reported in ascending order. Anything you've hung off J10 shows up in the same
 list — if a sensor is missing here, it's a wiring or address problem, not a firmware one.
 
-The scan is followed by a JSON line of telemetry roughly every 500 ms.
+The scan is followed by a **CSV** line of telemetry roughly every 500 ms — the same text
+that goes to the SD card ([main.py:306](main.py#L306)). There is no header row, and the
+columns after the first eight depend on which sensors were detected.
 
-To see the BLE side, install **nRF Connect** on a phone and look for your payload. It
-advertises both the Wenet service and a Nordic UART service. Press the **BOOTSEL** button
-on the Pico to toggle debug mode — the LED blinks ten times to confirm, and readable JSON
-starts streaming over BLE UART.
+To see the BLE side, use [the web configurator](#web-configurator), or install **nRF
+Connect** on a phone. Note the payload advertises *only* the Wenet service UUID but sends
+its telemetry on the Nordic UART TX characteristic — see [Data output](#data-output).
+
+Pressing **BOOTSEL** toggles the `debug` flag: the LED blinks ten times to confirm, then
+switches from a steady toggle to a short blip each cycle. Despite the comment at
+[main.py:145](main.py#L145), this only changes the LED — it does not change what is
+transmitted.
 
 ### 7. Set the hardware clock
 
@@ -187,11 +209,28 @@ is what `JP1` is for: it moves the onboard BMP280 clear of an external Bosch sen
 
 ## Data output
 
-**BLE** — CBOR-encoded packets on characteristic `3d235f0e-…` under service
-`fb63feb8-…`, updated every 500 ms (`update_interval` in [main.py](main.py#L29)).
+**BLE** — CBOR-encoded packets, updated every `update_interval` ms (500 by default).
+The service and characteristic are **not the pair you'd expect**:
+
+| | UUID | Role |
+|---|---|---|
+| Advertised service | `fb63feb8-31ad-451d-a587-9fc20f9c8add` | Wenet — the only UUID in the advertising payload |
+| Wenet characteristic | `3d235f0e-61f8-4455-89c6-2f7d73c33178` | Registered at [main.py:42](main.py#L42), **never written** |
+| NUS service | `6e400001-b5a3-f393-e0a9-e50e24dcca9e` | Not advertised |
+| **NUS TX characteristic** | `6e400003-b5a3-f393-e0a9-e50e24dcca9e` | **Where the CBOR actually goes** ([main.py:304](main.py#L304), [main.py:399](main.py#L399)) |
+
+So a client must *scan* for the Wenet service but *subscribe* to the Nordic UART TX
+characteristic. Under the Web Bluetooth API that means listing NUS in `optionalServices`,
+or access to it is denied even after connecting.
+
 Packets must stay under 254 bytes to fit a Wenet telemetry frame; the code warns at 228
 bytes and asserts at the limit. If you add sensors and hit that ceiling, split the payload
 across two packets.
+
+One BLE caveat: a notification carries at most `ATT MTU − 3` bytes. A full packet can reach
+254, so on a host that never negotiates a larger MTU the tail is silently cut off. At the
+23-byte default not even the first field survives — `time` alone is a 20-character string.
+Phones and desktop Chrome normally negotiate up to 517 and are fine.
 
 **SD card** — one CSV per task, named from your `payload_name`:
 
@@ -203,6 +242,40 @@ across two packets.
 Rows are flushed after every write, so pulling power mid-flight loses at most the last
 sample. If the card is missing or unreadable the payload logs the error and keeps running
 on BLE alone.
+
+**USB serial** — the same CSV rows are printed to the REPL, with no header.
+
+## Web configurator
+
+[configurator.html](configurator.html) is a single self-contained page — no build step, no
+CDN, no dependencies. Open it in a Chromium browser (Chrome, Edge, Opera); Firefox and
+Safari ship neither Web Bluetooth nor Web Serial. If you open it as a `file://` URL and the
+buttons do nothing, serve it over localhost instead:
+
+```
+python -m http.server
+# then visit http://localhost:8000/configurator.html
+```
+
+**Over Bluetooth** it decodes the CBOR packets live and shows KPI tiles, a packet-size meter
+against the 228/254-byte budget, a per-field history chart, and a table of every field with
+units. Truncated packets are decoded as far as they go and flagged, rather than dropped.
+
+**Over USB serial** it parses the CSV debug lines, and — because it can reach the
+MicroPython REPL — it is the only transport that can read and write `config.json`:
+
+| Field | Range |
+|---|---|
+| `payload_name` | 1–8 characters (the page shows the advertising payload cost as you type) |
+| `update_interval` | 50–60000 ms |
+
+Writing interrupts the running payload with Ctrl-C, enters the raw REPL, writes the file,
+reads it back to verify, and soft-reboots. The bytes go over as hex and are rebuilt with
+`binascii.unhexlify`, so quoting and newlines can't corrupt the transfer.
+
+There's also a **JP3 fitted** checkbox. Tick it when the HAT's ADC2 divider is installed and
+the page converts `adc2` counts to volts at 0.003223 V/count — see
+[the HAT](#the-rab-pi-pico-hat).
 
 ## Troubleshooting
 
@@ -232,6 +305,21 @@ timestamps are relative to boot.
 **`Unable to set up SD card!`** — make sure the card is formatted FAT32, and try a lower
 `baudrate` in [`sd_write_task()`](main.py#L428). On a bare Pico also check the SPI wiring
 against the table above.
+
+**The payload doesn't appear in the configurator's Bluetooth picker** — the picker filters on
+the advertised Wenet service. If the device is powered and nothing lists, `payload_name` is
+probably longer than 8 characters, so `aioble.advertise()` threw and no advertising is
+happening at all. Check the REPL for a traceback.
+
+**Bluetooth connects but every packet logs as partial** — the ATT MTU is smaller than the
+packet. See the caveat under [Data output](#data-output). Nothing is wrong with the payload;
+the transport is truncating it.
+
+**The configurator's config buttons are greyed out** — they need USB serial. Bluetooth
+carries telemetry only; there's no write path over BLE.
+
+**Serial config read/write fails or hangs** — something else holds the port. Close the
+MicroPico REPL (and any other terminal) first; only one program can own a serial port.
 
 **ADC2 on J2 reads full scale, or 4× off** — check `JP3`. Open (the default) means no
 attenuation, so J2 is 0–3.3 V and anything higher pins the reading. Fitted means a 4:1
