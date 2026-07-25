@@ -131,7 +131,7 @@ Schematic: [RAB Pi Pico HAT.pdf](RAB%20Pi%20Pico%20HAT.pdf) (Rev A, 2025-09-20).
 | J10 | JST SM04B-SRSS | I2C expansion — 3V3, SDA, SCL, GND. Where external sensors go. |
 | J5 | JST S3B-PH | Analog in → **ADC0**, 100 Ω series + 0.1 µF. Direct 0–3.3 V. |
 | J4 | JST S3B-PH | Analog in → **ADC1**, 100 Ω series + 0.1 µF. Direct 0–3.3 V. |
-| J2 | JST S3B-PH | Analog in → **ADC2**, via 10.2 kΩ/3.4 kΩ divider. 0–13.2 V. |
+| J2 | JST S3B-PH | Analog in → **ADC2**, 10.2 kΩ series. 0–3.3 V as shipped; 0–13.2 V with `JP3` fitted. |
 | J3 / J8 | Molex / 0532610271 | Battery input to `+BATT` |
 
 Three things to know before you fly it:
@@ -140,10 +140,12 @@ Three things to know before you fly it:
   live at those same two addresses, and the firmware only tracks one Bosch part per
   address — so if you hang a BME680 off J10, set `JP1` to the address it isn't using or one
   of the two will be invisible.
-- **J2 is the only high-voltage analog input.** Its 10.2 kΩ/3.4 kΩ divider is a 4:1 attenuator,
-  so ADC2 reads up to 13.2 V at **0.003223 V per count**. J5 and J4 have plain 100 Ω series
-  resistors — they limit fault current into the RP2040's clamp diodes but provide no
-  attenuation, so treat those two as 0–3.3 V only.
+- **All three analog inputs are 0–3.3 V as the board ships.** `JP3` is open by default, which
+  leaves R7 (3.4 kΩ) disconnected from ground — so J2 is just a 10.2 kΩ series resistor into
+  ADC2, with no attenuation. **Fit `JP3`** to ground R7 and turn J2 into a 4:1 divided input:
+  0–13.2 V at **0.003223 V per count**. Do that before feeding it a battery voltage; with
+  `JP3` open, anything over 3.3 V goes almost straight at the pin and the reading pins at
+  full scale. J4 and J5 have plain 100 Ω series resistors and are always 0–3.3 V.
 - **OneWire is not broken out on Rev A.** GP21 is free on the Pico header but doesn't reach a
   connector, so DS18X20 sensors need a direct tap to that pin.
 
@@ -231,7 +233,11 @@ timestamps are relative to boot.
 `baudrate` in [`sd_write_task()`](main.py#L428). On a bare Pico also check the SPI wiring
 against the table above.
 
-**ADC2 readings are 4× low** — that's the HAT's divider on J2, not a fault. Multiply counts
-by 0.003223 to get volts. Note the commented-out `vbatt_scale` in
-[main.py](main.py#L130) is for a *different* board — it assumes an 11.97 kΩ/2.68 kΩ divider
-on ADC0, so don't uncomment it as-is on a RAB HAT.
+**ADC2 on J2 reads full scale, or 4× off** — check `JP3`. Open (the default) means no
+attenuation, so J2 is 0–3.3 V and anything higher pins the reading. Fitted means a 4:1
+divider, so multiply counts by 0.003223 to get volts. A reading 4× lower than expected means
+`JP3` is in and you're scaling as though it isn't.
+
+Either way, don't just uncomment `vbatt_scale` in [main.py](main.py#L130) — it's from a
+*different* board, assuming an 11.97 kΩ/2.68 kΩ divider on ADC0 rather than the HAT's
+10.2 kΩ/3.4 kΩ on ADC2.
