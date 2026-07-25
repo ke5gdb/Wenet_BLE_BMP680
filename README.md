@@ -5,6 +5,10 @@ auto-detected I2C and OneWire sensors, broadcasts CBOR-encoded telemetry over BL
 [Wenet](https://github.com/projecthorus/wenet) high-altitude balloon downlinks, and logs
 everything to CSV on an SD card.
 
+The firmware's default pinout targets the **RAB Pi Pico HAT** — see
+[the HAT](#the-rab-pi-pico-hat) below. It runs on a bare Pico W too, if you wire the
+peripherals yourself.
+
 ## Quick start
 
 ### 1. What you need
@@ -12,8 +16,10 @@ everything to CSV on an SD card.
 - A **Pico W** or **Pico 2 W** — the wireless variant is required, not a plain Pico.
   The code uses `Pin('LED')` and `Pin('WL_GPIO1')`, which only exist on the W boards.
 - A USB cable, and VS Code.
-- Optionally: any of the supported sensors, an SD card breakout, and a PCF8523 RTC.
-  Every sensor is optional and auto-detected — the payload runs fine with none attached.
+- **Strongly recommended for flights: the RAB Pi Pico HAT.** It carries the RTC,
+  SD socket, BMP280, battery input, and filtered analog inputs on one board with no
+  hand-wiring. Not required — the payload runs on a bare Pico W, and every peripheral is
+  optional and auto-detected. See [the HAT](#the-rab-pi-pico-hat).
 
 ### 2. Flash MicroPython
 
@@ -69,31 +75,83 @@ the I2C scan report each device it finds:
 
 ```
 Checking for I2C devices...
-BME680 detected at 0x77!
+[104, 118]
 PCF8523 detected!
 Synchronized CPU clock -- 2026-07-24 18:22:04
+BMP280 detected at 0x76!
 Checking for OneWire devices...
 No OneWire devices found!
 ```
 
-...followed by a JSON line of telemetry roughly every 500 ms.
+That's a stock RAB HAT: `104` is the PCF8523 at 0x68, `118` is the onboard BMP280 at 0x76.
+Addresses are reported in ascending order. Anything you've hung off J10 shows up in the same
+list — if a sensor is missing here, it's a wiring or address problem, not a firmware one.
+
+The scan is followed by a JSON line of telemetry roughly every 500 ms.
 
 To see the BLE side, install **nRF Connect** on a phone and look for your payload. It
 advertises both the Wenet service and a Nordic UART service. Press the **BOOTSEL** button
 on the Pico to toggle debug mode — the LED blinks ten times to confirm, and readable JSON
 starts streaming over BLE UART.
 
-### 7. Set the hardware clock (optional)
+### 7. Set the hardware clock
 
-If you fitted a PCF8523, run [ntp_sync.py](ntp_sync.py) once from the REPL after filling in
-your Wi-Fi credentials. It pulls the time from `pool.ntp.org` and writes it to the RTC,
-which then keeps time on its backup battery. `main.py` reads it on every boot, so accurate
-log timestamps no longer need a network connection.
+On the RAB HAT the PCF8523 is already fitted. Run [ntp_sync.py](ntp_sync.py) once from the
+REPL after filling in your Wi-Fi credentials. It pulls the time from `pool.ntp.org` and
+writes it to the RTC, which then keeps time on its ML621 coin cell. `main.py` reads it on
+every boot, so accurate log timestamps no longer need a network connection.
 
 Note the script ends in an infinite print loop — `Ctrl+C` when you're satisfied the time is
 correct.
 
-## Wiring
+## The RAB Pi Pico HAT
+
+A carrier board for the Pico W that provides everything the firmware expects, already
+wired. **Strongly recommended for flights** — it removes the hand-wiring that tends to fail
+under vibration and cold, and gives you a proper battery input and a backed-up clock. It is
+**not required**: the firmware runs on a bare Pico W, and every peripheral it adds is
+optional and auto-detected.
+
+Schematic: [RAB Pi Pico HAT.pdf](RAB%20Pi%20Pico%20HAT.pdf) (Rev A, 2025-09-20).
+
+**Onboard:**
+
+| Part | What it gives you |
+|---|---|
+| BMP280 (U2) | Temperature and pressure, no external sensor needed |
+| PCF8523 (U1) + ML621 coin cell | Real-time clock that survives power-down |
+| microSD socket (J1) | CSV logging, with card-detect wired up |
+| Reset button (SW1) | Pulls `RUN` low — reboot without unplugging USB |
+| Battery input (J3, J8) | Feeds `VSYS`, read back on ADC3 by `get_batt()` |
+
+**Connectors:**
+
+| Connector | Type | Purpose |
+|---|---|---|
+| J10 | JST SM04B-SRSS | I2C expansion — 3V3, SDA, SCL, GND. Where external sensors go. |
+| J5 | JST S3B-PH | Analog in → **ADC0**, 100 Ω series + 0.1 µF. Direct 0–3.3 V. |
+| J4 | JST S3B-PH | Analog in → **ADC1**, 100 Ω series + 0.1 µF. Direct 0–3.3 V. |
+| J2 | JST S3B-PH | Analog in → **ADC2**, via 10.2 kΩ/3.4 kΩ divider. 0–13.2 V. |
+| J3 / J8 | Molex / 0532610271 | Battery input to `+BATT` |
+
+Three things to know before you fly it:
+
+- **`JP1` sets the onboard BMP280's I2C address** (0x76 or 0x77). The BME280 and BME680
+  live at those same two addresses, and the firmware only tracks one Bosch part per
+  address — so if you hang a BME680 off J10, set `JP1` to the address it isn't using or one
+  of the two will be invisible.
+- **J2 is the only high-voltage analog input.** Its 10.2 kΩ/3.4 kΩ divider is a 4:1 attenuator,
+  so ADC2 reads up to 13.2 V at **0.003223 V per count**. J5 and J4 have plain 100 Ω series
+  resistors — they limit fault current into the RP2040's clamp diodes but provide no
+  attenuation, so treat those two as 0–3.3 V only.
+- **OneWire is not broken out on Rev A.** GP21 is free on the Pico header but doesn't reach a
+  connector, so DS18X20 sensors need a direct tap to that pin.
+
+### Wiring a bare Pico W
+
+Skip this if you have the HAT — it already matches. These are the defaults in
+[main.py](main.py#L54-L60) and [`sd_write_task()`](main.py#L428-L431); change them there if
+your board differs.
 
 | Function | Interface | Pins |
 |---|---|---|
@@ -102,9 +160,6 @@ correct.
 | SD card | SPI0 | SCK = **GP18**, MOSI = **GP19**, MISO = **GP16**, CS = **GP17** |
 | Analog inputs | ADC0-2 | **GP26**, **GP27**, **GP28** |
 | Battery voltage | ADC3 | GP29 (internal VSYS sense) |
-
-All of these are set at the top of [main.py](main.py#L54-L60) and in
-[`sd_write_task()`](main.py#L428-L431) if your board wires them differently.
 
 ## Supported sensors
 
@@ -116,16 +171,17 @@ Detected by I2C address at startup; attach any subset.
 | Honeywell HSC | 0x28 | Pressure |
 | HDC302x | 0x44-0x45 | Temperature, humidity |
 | MAX31725 | 0x48-0x4F | Temperature |
-| PCF8523 | 0x68 | Real-time clock |
+| PCF8523 | 0x68 | Real-time clock — **onboard on the RAB HAT** |
 | LSM6DSOX | 0x6A | Accelerometer, gyroscope (logged on its own faster task) |
-| BMP280 | 0x76/0x77 | Temperature, pressure |
+| BMP280 | 0x76/0x77 | Temperature, pressure — **onboard on the RAB HAT** |
 | BME280 | 0x76/0x77 | Temperature, pressure, humidity |
 | BME680 | 0x76/0x77 | Temperature, pressure, humidity, gas |
 | DS18X20 | OneWire | Temperature (multiple supported) |
 
 The three Bosch parts share the same addresses, so they're told apart by reading the chip
 ID register — you don't configure which one you have. Only one Bosch sensor per address is
-tracked, so two identical parts at 0x76 and 0x77 will not both report.
+tracked, so two identical parts at 0x76 and 0x77 will not both report. On the RAB HAT this
+is what `JP1` is for: it moves the onboard BMP280 clear of an external Bosch sensor.
 
 ## Data output
 
@@ -160,11 +216,22 @@ mip.install("aioble")
 **Upload project to Pico** and confirm `lib/cbor2/` came with it.
 
 **Nothing on the I2C scan** — check SDA/SCL aren't swapped, confirm pull-ups are present,
-and verify the sensor is powered at the right voltage.
+and verify the sensor is powered at the right voltage. On the RAB HAT you should always see
+at least 0x68 (PCF8523) and 0x76 or 0x77 (BMP280); if you see neither, suspect the Pico
+isn't seated properly on the header.
 
-**Timestamps start at 2021-01-01** — no RTC was found, so the clock is unset. Fit a
-PCF8523 and run `ntp_sync.py`, or accept that timestamps are relative to boot.
+**An external BME280/BME680 never appears** — it's colliding with the HAT's onboard BMP280.
+Move `JP1` to the other address.
 
-**`Unable to set up SD card!`** — check the SPI wiring against the table above, make sure
-the card is formatted FAT32, and try a lower `baudrate` in
-[`sd_write_task()`](main.py#L428) if the card is on long leads.
+**Timestamps start at 2021-01-01** — no RTC was found, so the clock is unset. On a bare Pico
+fit a PCF8523; on the HAT check the ML621 coin cell, then run `ntp_sync.py`. Otherwise
+timestamps are relative to boot.
+
+**`Unable to set up SD card!`** — make sure the card is formatted FAT32, and try a lower
+`baudrate` in [`sd_write_task()`](main.py#L428). On a bare Pico also check the SPI wiring
+against the table above.
+
+**ADC2 readings are 4× low** — that's the HAT's divider on J2, not a fault. Multiply counts
+by 0.003223 to get volts. Note the commented-out `vbatt_scale` in
+[main.py](main.py#L130) is for a *different* board — it assumes an 11.97 kΩ/2.68 kΩ divider
+on ADC0, so don't uncomment it as-is on a RAB HAT.
