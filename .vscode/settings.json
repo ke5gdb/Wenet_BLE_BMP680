@@ -14,6 +14,14 @@
     // micropico.syncFileTypes (md/pdf/code-workspace aren't in it). The two below are
     // not: .html and .py are both sync types, but these run on your computer, not the
     // Pico -- ble_test.py imports bleak, which does not exist in MicroPython.
+    //
+    // sd_check.py runs on the Pico, but only via "Run current file", which sends the
+    // source over the REPL. It is a bench tool, not part of the payload, so it does
+    // not belong in the upload.
+    //
+    // sd_format.py is NOT ignored: the configurator's Format SD card button runs
+    // `import sd_format` on the board, so the module has to be uploaded with the
+    // project. It costs ~7 KB and nothing imports it at boot.
     "micropico.pyIgnore": [
         "**/.picowgo",
         "**/.micropico",
@@ -27,7 +35,8 @@
         "**/.venv",
         "**/.idea",
         "configurator.html",
-        "ble_test.py"
+        "ble_test.py",
+        "sd_check.py"
     ],
     "python.analysis.typeshedPaths": [
         "~/.micropico-stubs/included",

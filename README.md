@@ -51,11 +51,8 @@ the advertised BLE name, and the CSV filename:
 payload_name = "RAB_HAT"
 ```
 
-**`payload_name` cannot exceed 8 characters.** The legacy BLE advertising payload is 31
-bytes: 3 for flags, 18 for the 128-bit Wenet service UUID, and 2 of header for the name,
-leaving 8. A longer name makes `aioble.advertise()` fail, which propagates out of
-`asyncio.gather()` and takes down every task — so it isn't a cosmetic limit. The loader
-truncates rather than let that happen.
+**`payload_name` can be up to 32 bytes, but only the first 8 are advertised.** Note that longer
+payload IDs reduce the amount of data conveyed through the BLE data link (max 254 bytes).
 
 You don't have to edit the file for this: `payload_name` and `update_interval` can also be
 set from [the web configurator](#web-configurator), which writes a `config.json` that
@@ -111,8 +108,11 @@ Addresses are reported in ascending order. Anything you've hung off J10 shows up
 list — if a sensor is missing here, it's a wiring or address problem, not a firmware one.
 
 The scan is followed by a **CSV** line of telemetry roughly every 500 ms — the same text
-that goes to the SD card ([main.py:306](main.py#L306)). There is no header row, and the
-columns after the first eight depend on which sensors were detected.
+that goes to the SD card ([main.py:348](main.py#L348)). There is no header row, and the
+columns after the first eight depend on which sensors were detected. If an LSM6DSOX is
+fitted its task prints its own interleaved lines ([main.py:429](main.py#L429)) with a
+different layout, so read the columns against the task name in column 2, not by position
+alone. Each task writes to its own `data_log_<id>.csv` on the SD card.
 
 To see the BLE side, use [the web configurator](#web-configurator), or install **nRF
 Connect** on a phone. Note the payload advertises *only* the Wenet service UUID but sends
@@ -268,17 +268,104 @@ python -m http.server
 against the 228/254-byte budget, a per-field history chart, and a table of every field with
 units. Truncated packets are decoded as far as they go and flagged, rather than dropped.
 
+Each sensor task publishes its own packet with its own `id` and its own fields — `RAB_HAT_ENV`
+from `sensor_task`, `RAB_HAT_LSM6DSOX` from `sensor_task_lsm6dso` — so the page keeps them
+apart. The table is grouped by source, with each group's packet count, rate, size and age in
+its header; a group that stops updating is marked rather than left showing frozen values. The
+chart's field list is grouped the same way, because `count` and `time` exist in every packet
+and would otherwise be two series drawn as one. The meter tracks the *largest* packet across
+sources, since `build_packet()` asserts on each packet separately.
+
 **Over USB serial** it parses the CSV debug lines, and — because it can reach the
-MicroPython REPL — it is the only transport that can read and write `config.json`:
+MicroPython REPL — it is the only transport that can read and write `config.json`, export
+the SD logs, or format the card:
 
 | Field | Range |
 |---|---|
-| `payload_name` | 1–8 characters (the page shows the advertising payload cost as you type) |
-| `update_interval` | 50–60000 ms |
+| `payload_name` | 1–32 bytes; the hint shows the advertised (first 8 bytes) form as you type |
+| `update_interval` | 50–60000 ms — left blank alongside a name, it writes the 500 ms default |
 
 Writing interrupts the running payload with Ctrl-C, enters the raw REPL, writes the file,
 reads it back to verify, and soft-reboots. The bytes go over as hex and are rebuilt with
-`binascii.unhexlify`, so quoting and newlines can't corrupt the transfer.
+`binascii.unhexlify`, so quoting and newlines can't corrupt the transfer. Reading does the
+same Ctrl-C and so also ends in a soft reboot — otherwise the board would be left in the
+REPL with `main.py` killed and nothing streaming. A successful write additionally drops the
+cached telemetry, since a new `payload_name` renames every source `id`.
+
+The CSV lines have no header row, and `sensor_task` appends columns only for the sensors it
+detected, so the page names those columns from the `... detected!` lines `main()` prints at
+boot (the OneWire ones label themselves). Connect after boot and they show as `extra0`,
+`extra1`, … until the next reboot — **Read from device** is enough to trigger one.
+
+### Exporting flight data
+
+**List logs** reads `/sd` over the REPL and shows every `data_log_*.csv` with its size.
+Each row gets a **Download** button that pulls the file off the card and saves it, so a
+flight can be recovered without opening the payload. If `/sd` isn't mounted — the payload
+never got that far, say — the listing mounts it first.
+
+The row shows a running percentage. 115200 is nominal — the Pico is a USB CDC device, so
+the real rate is USB's, and a 100 KB log lands in about a second.
+
+The file is dumped **raw** rather than base64-encoded, which is a third less to transfer,
+and verified against a size the device reports immediately before the read. That check is
+not decoration: raw framing assumes the file holds no `0x04` (the REPL's end-of-output
+marker) and nothing that isn't valid UTF-8. Anything `sensor_task` wrote satisfies that,
+but a log truncated by a power cut mid-write might not — and that is exactly the file
+worth recovering. A truncated transfer lands short, a mangled byte re-encodes to three
+and lands long, so either way you get an error instead of a quietly corrupted CSV.
+
+The bytes go out through `sys.stdout.buffer`, not `sys.stdout`. The latter is MicroPython's
+*cooked* stream: it inserts a CR before every LF, which silently adds one byte per line —
+about 0.8% on a log of 127-byte rows. If a port ever lacks `sys.stdout.buffer`, the page
+detects the damage and undoes it, but only when removing the CRs makes the size match
+exactly, so the correction is never a guess.
+
+The size deliberately comes from the download, not from the listing. Every REPL round trip
+ends in a soft reboot, so between listing and downloading the payload is running again and
+appending to the very file being sized — `sensor_task_lsm6dso` queues a line every 50 ms,
+so the listing's figure is stale within seconds. Sizes shown in the file list are therefore
+a snapshot; the verification uses the live one.
+
+The logs have no header row on the card. The export adds one when it can be derived with
+certainty — the task from the filename, the optional sensor columns from the boot output —
+and only when the first data row has exactly that many columns. Otherwise the file is
+saved unchanged and the console says why. A header off by one column would be worse than
+no header at all.
+
+### Format SD card
+
+**Format SD card** runs [`sd_format.py`](sd_format.py) on the board and streams its progress
+into the console. It asks for confirmation first, because it erases the card.
+
+It is not just a `mkfs`. Before touching the filesystem it probes the card's real capacity,
+then afterwards it decodes the layout that resulted, mounts it exactly the way
+`sd_write_task()` does, and writes and reads back a file. It reports success only if all of
+that passes. A card that lies about its size is refused rather than formatted — a fake
+formats and mounts perfectly happily, then corrupts in flight once the logs pass the real
+capacity, which is a far worse failure than a refusal on the bench.
+
+The probe writes a distinct pattern to points across the card and reads them *all* back
+afterwards, including at every power of two. Checking each spot right after writing it would
+prove nothing, since a card that aliases high addresses onto low ones returns whatever you
+just wrote. Powers of two matter because `2**n % 2**m == 0`: on a card that wraps, every
+probe above the real capacity lands back on block 0, which then holds a tag naming a much
+higher block. It is a fast screen, not a full verify — an alias at some arbitrary
+non-power-of-two boundary would slip through, and only writing the whole card catches that,
+so `h2testw` or `f3` on a computer is still the last word.
+
+Unlike the config buttons, this one needs [`sd_format.py`](sd_format.py) *on the board* — the
+page runs `import sd_format` rather than pasting the module over the wire. It is deliberately
+kept out of `micropico.pyIgnore` for that reason. Nothing imports it at boot, so it costs
+only flash. If it is missing, the console says so and points at the setting.
+
+`mkfs` on a 7.5 GiB card takes about 20 seconds at 1.32 MHz, plus the probe, so this one call
+gets a 5-minute timeout instead of `replExec()`'s usual 6 seconds.
+
+You can also run it on the bench without the page: set `I_UNDERSTAND_THIS_ERASES_THE_CARD` at
+the top of the file, then **MicroPico: Run current file**. To diagnose a card without writing
+to it at all, [`sd_check.py`](sd_check.py) is read-only — it decodes sector 0, walks the whole
+card with single-block reads, and finds the highest SPI clock the card survives.
 
 There's also a **JP3 fitted** checkbox. Tick it when the HAT's ADC2 divider is installed and
 the page converts `adc2` counts to volts at 0.003223 V/count — see
@@ -314,9 +401,9 @@ timestamps are relative to boot.
 against the table above.
 
 **The payload doesn't appear in the configurator's Bluetooth picker** — the picker filters on
-the advertised Wenet service. If the device is powered and nothing lists, `payload_name` is
-probably longer than 8 characters, so `aioble.advertise()` threw and no advertising is
-happening at all. Check the REPL for a traceback.
+the advertised Wenet service, not the name, so a name truncated for the advert is not the
+cause. If the device is powered and nothing lists, check the REPL for a traceback out of
+`aioble.advertise()`; if it threw, every task is down.
 
 **Bluetooth connects but every packet logs as partial** — the ATT MTU is smaller than the
 packet. See the caveat under [Data output](#data-output). Nothing is wrong with the payload;

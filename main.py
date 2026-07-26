@@ -29,10 +29,17 @@ payload_name = "RAB_HAT"
 # BLE Update rate (in ms)
 update_interval = 500
 
-# The advertising payload is 31 bytes: 3 for flags, 18 for the 128-bit Wenet service
-# UUID, and 2 of header for the name. That leaves 8 characters for payload_name -- a
-# longer name makes aioble.advertise() fail, which would take down every task.
-_MAX_NAME_LEN = 8
+# Max name length. 32 is reasonable, but when you actually configure the name, less is more. 
+_MAX_NAME_LEN = 32
+
+# Limit advertisement name to this many characters to prevent aioble failure
+_ADV_NAME_LEN = 8
+
+def _truncate(name, limit):
+    # aioble encodes the name as UTF-8, so the budget is bytes, not characters.
+    while len(name.encode()) > limit:
+        name = name[:-1]
+    return name
 
 # Optional overrides written by the web configurator (configurator.html). Anything
 # missing, unreadable, or out of range falls back to the values above, so a bad config
@@ -55,10 +62,10 @@ def _load_config():
 
     name = cfg.get('payload_name')
     if isinstance(name, str) and name:
-        if len(name) > _MAX_NAME_LEN:
-            print(f"payload_name '{name}' exceeds {_MAX_NAME_LEN} chars, truncating")
-            name = name[:_MAX_NAME_LEN]
-        payload_name = name
+        trimmed = _truncate(name, _MAX_NAME_LEN)
+        if trimmed != name:
+            print(f"payload_name '{name}' exceeds {_MAX_NAME_LEN} bytes, truncating to '{trimmed}'")
+        payload_name = trimmed
 
     interval = cfg.get('update_interval')
     if isinstance(interval, int) and not isinstance(interval, bool):
@@ -345,8 +352,11 @@ async def sensor_task():
 
         nus_tx_characteristic.write(cbor_packet, send_update=True)
 
+        # Remove the trailing comma
+        csv_data = csv_data.rstrip(',')
+
         print(csv_data)
-        
+
         sd_queue.append((packet_dict['id'], csv_data + '\n'))
 
         count = (count + 1) % 65536
@@ -425,9 +435,13 @@ async def sensor_task_lsm6dso():
                 packet_dict.update(lsm_dict)
             except:
                 print("LSM6DSO communications error!")
-        
+
+            # This task's data block has no trailing comma, but the header above does,
+            # so a comms error leaves one behind. Same strip, same reason.
+            csv_data = csv_data.rstrip(',')
+
             print(csv_data)
-            
+
             sd_queue.append((packet_dict['id'], csv_data + '\n'))
             
             time_delta = update_at - (time.time_ns() // 1_000_000)
@@ -453,14 +467,20 @@ async def sensor_task_lsm6dso():
 # Serially wait for connections. Don't advertise while a central is
 # connected.
 async def peripheral_task():
+    adv_name = _truncate(payload_name, _ADV_NAME_LEN)
+    if adv_name != payload_name:
+        print(f"Advertising as '{adv_name}'")
+
     while True:
         async with await aioble.advertise(
             _ADV_INTERVAL_MS,
-            name=payload_name,
+            name=adv_name,
             services=[_WENET_SERVICE_UUID],
         ) as connection:
             print("Connection from", connection.device)
             await connection.disconnected(timeout_ms=None)
+
+_SD_FLUSH_INTERVAL_MS = 5000
 
 # SD card writer task
 async def sd_write_task():
@@ -481,24 +501,35 @@ async def sd_write_task():
             sd_queue.clear()
 
         files = {}
+        last_flush = time.time_ns() // 1_000_000
 
         try:
             while True:
-                # t1 = time.time_ns() // 1_000_000
-                while len(sd_queue):
-                    dest, data = sd_queue.pop(0)
+                if sd_queue:
+                    batch = sd_queue
+                    sd_queue = []
+                    grouped = {}
+                    for dest, data in batch:
+                        grouped.setdefault(dest, []).append(data)
 
-                    if dest not in files:
-                        filename = f"/sd/data_log_{dest}.csv"
-                        files[dest] = open(filename, 'a')
-                        print(f"Opened file {filename}")
-                    
-                    files[dest].write(data)
-                    files[dest].flush()
+                    for dest, parts in grouped.items():
+                        if dest not in files:
+                            filename = f"/sd/data_log_{dest}.csv"
+                            files[dest] = open(filename, 'a')
+                            print(f"Opened file {filename}")
 
-                sd_queue.clear()
-                # t2 = time.time_ns() // 1_000_000
-                # print(f"{(t2 - t1)}, {(data_length / (t2 - t1))}")
+                        files[dest].write(''.join(parts))
+
+                        # Yield between files so a big batch can't starve BLE for its
+                        # whole duration.
+                        await asyncio.sleep_ms(0)
+
+                now = time.time_ns() // 1_000_000
+                if now - last_flush >= _SD_FLUSH_INTERVAL_MS:
+                    for file in files.values():
+                        file.flush()
+                        await asyncio.sleep_ms(0)
+                    last_flush = now
 
                 await asyncio.sleep(1)
 
@@ -508,7 +539,10 @@ async def sd_write_task():
             await asyncio.sleep(1)
 
         finally:
-            for file in files:
+            # .values(), not the dict itself -- iterating a dict yields its keys, and
+            # calling .close() on the filename string raises AttributeError out of a
+            # finally, which kills this task and every other one through gather().
+            for file in files.values():
                 file.close()
     
 
@@ -588,4 +622,8 @@ async def main():
 
     await asyncio.gather(*task_list)
 
-asyncio.run(main())
+try:
+    asyncio.run(main())
+finally:
+    asyncio.new_event_loop()
+    bluetooth.BLE().active(False)
