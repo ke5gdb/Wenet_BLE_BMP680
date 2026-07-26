@@ -5,6 +5,30 @@
 		}
 	],
 	"settings": {
-		"python.languageServer": "Pylance"
+		"python.languageServer": "Pylance",
+		// Every micropico.* setting is declared machine-overridable scope. Opening the
+		// project through this file makes .vscode/settings.json *folder* settings, and
+		// VS Code drops machine-overridable keys at folder level -- so the pyIgnore list
+		// over there is silently ignored and configurator.html gets uploaded to the board.
+		// This copy covers opening the workspace; the copy in .vscode/settings.json covers
+		// opening the bare folder, where it counts as workspace settings and does apply.
+		// The two lists must be kept in step -- see that file for what each entry is for.
+		"micropico.openOnStart": true,
+		"micropico.pyIgnore": [
+			"**/.picowgo",
+			"**/.micropico",
+			"**/.vscode",
+			"**/.gitignore",
+			"**/.git",
+			"**/.DS_Store",
+			"**/project.pico-go",
+			"**/env",
+			"**/venv",
+			"**/.venv",
+			"**/.idea",
+			"**/configurator.html",
+			"**/ble_test.py",
+			"**/sd_check.py"
+		]
 	}
 }

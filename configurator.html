@@ -237,9 +237,13 @@
   <div class="row" style="margin-top:0.875rem">
     <button id="cfgRead" disabled>Read from device</button>
     <button class="primary" id="cfgWrite" disabled>Write &amp; reboot</button>
+    <button id="rtcSync" disabled>Sync RTC to UTC</button>
     <span class="muted" style="font-size:0.8125rem">
-      Requires serial. Writing interrupts the running payload and soft-reboots it.
+      All three need serial, and each interrupts the running payload and soft-reboots it.
     </span>
+  </div>
+  <div class="meter-note" style="margin-top:0.75rem">
+    <strong>Sync RTC</strong> sets the battery-backed PCF8523 from this computer's clock in UTC. 
   </div>
 </div>
 
@@ -256,9 +260,8 @@
   <div id="sdFiles"></div>
   <div class="meter-note" style="margin-top:0.75rem">
     <strong>List logs</strong> reads <code>/sd</code> and offers each <code>data_log_*.csv</code>
-    for download. Serial runs at 115200, about 11 KB/s, so a large log takes a while — the
-    row shows progress. <strong>Format</strong> erases the card, then verifies it: capacity
-    probe, FAT32 mkfs, mount and read-back. It needs <code>sd_format.py</code> on the board.
+    for download; the row shows progress. <strong>Format</strong> erases the card, then verifies it: capacity
+    probe, FAT32 mkfs, mount and read-back.
   </div>
 </div>
 
@@ -838,6 +841,7 @@ function setConn(kind, text) {
   const serial = state.transport === 'serial';
   $('cfgRead').disabled = !serial;
   $('cfgWrite').disabled = !serial;
+  $('rtcSync').disabled = !serial;
   $('sdFormat').disabled = !serial;
   $('sdList').disabled = !serial;
   // Per-file Download buttons belong to a list that may be stale on a new connection.
@@ -1189,12 +1193,78 @@ async function writeConfig() {
   }
 }
 
+/* get_timestamp() in main.py stamps every record with a trailing Z, so the board's
+   convention is UTC end to end, and this button is now the only thing that sets the clock.
+   Sync from the host's UTC accordingly, never its local time — a payload quietly logging in the operator's
+   timezone is the kind of thing nobody catches until the flight data has to line up with
+   someone else's.
+
+   Both clocks get set. The PCF8523 is the one that matters, being battery-backed and the
+   source main() copies into the CPU RTC at boot; but a board with none fitted still wants
+   its CPU RTC right, and that survives the soft reset below.
+
+   No attempt is made to compensate for transfer delay. The raw-REPL handshake ahead of
+   the write is not deterministic, and the PCF8523 holds whole seconds anyway, so a fudge
+   factor would buy nothing over the second of error that is already inherent. */
+async function syncRtc() {
+  $('rtcSync').disabled = true;
+  const d = new Date();
+  // MicroPython's RTC weekday is 0=Monday; JS getUTCDay() is 0=Sunday. PCF8523's own
+  // weekday_start offset cancels out on write and read, so it wants this convention too.
+  const t = [d.getUTCFullYear(), d.getUTCMonth() + 1, d.getUTCDate(), (d.getUTCDay() + 6) % 7,
+             d.getUTCHours(), d.getUTCMinutes(), d.getUTCSeconds(), 0];
+  try {
+    log(`Setting the device clock to ${d.toISOString().slice(0, 19).replace('T', ' ')} UTC…`, 'tx');
+    const { out, err } = await replExec(
+      "from machine import RTC, I2C, Pin\n" +
+      `_t = (${t.join(', ')})\n` +
+      "RTC().datetime(_t)\n" +
+      "try:\n" +
+      "    from pcf8523 import PCF8523\n" +
+      "    PCF8523(I2C(0, scl=Pin(5), sda=Pin(4), freq=100000)).datetime = _t\n" +
+      "    print('__RTC__ both')\n" +
+      "except Exception as _e:\n" +
+      "    print('__RTC__ cpu', _e)\n" +
+      "print('__NOW__', RTC().datetime())\n"
+    );
+    if (err) log(`Device stderr: ${err}`, 'err');
+
+    const now = out.match(/__NOW__ \(([^)]*)\)/);
+    if (now) {
+      const v = now[1].split(',').map((n) => parseInt(n, 10));
+      const p = (n) => String(n).padStart(2, '0');
+      log(`Device clock now reads ${v[0]}-${p(v[1])}-${p(v[2])} ${p(v[4])}:${p(v[5])}:${p(v[6])} UTC.`, 'rx');
+    }
+
+    if (out.includes('__RTC__ both')) {
+      log('PCF8523 and CPU RTC both set. The time survives a power cycle.');
+    } else if (out.includes('__RTC__ cpu')) {
+      // Worth calling out rather than reporting a flat success: the CPU RTC alone is
+      // gone at the next power cycle, which for a payload means the flight after this one.
+      log(`CPU RTC set, but the PCF8523 did not take: ${out.split('__RTC__ cpu')[1].split('\n')[0].trim()}`, 'err');
+      log('Without it the clock resets when the board loses power — check the RTC is fitted and its cell is good.', 'err');
+    } else if (!err) {
+      log(`Unexpected reply: ${out}`, 'err');
+    }
+  } catch (e) {
+    log(`RTC sync failed: ${e.message}`, 'err');
+  } finally {
+    try {
+      await softReboot();
+      log('Soft reboot sent — main.py re-reads the PCF8523 into the CPU RTC on the way up.');
+    } catch (e) {
+      log(`Could not restart the payload: ${e.message}. Power-cycle the board.`, 'err');
+    }
+    $('rtcSync').disabled = state.transport !== 'serial';
+  }
+}
+
 /* =========================== SD card export =========================
    The logs live on the card, so recovering a flight means either pulling the card
    or reading it out over the REPL. This does the latter.
    ==================================================================== */
-const SD_MOUNT_BAUD = 1_320_000;   // conservative; serial is the bottleneck anyway
-const DOWNLOAD_TIMEOUT = 900000;   // 15 min: 115200 baud is roughly 11 KB/s
+const SD_MOUNT_BAUD = 1_320_000;   // sdcard.py's own default, and sd_format.py's BAUDRATE
+const DOWNLOAD_TIMEOUT = 900000;   // 15 min: a ceiling for a wedged transfer, not an estimate
 
 /* /sd is normally already mounted by sd_write_task, but not if the payload never got
    that far -- so fall back to mounting it here before listing. */
@@ -1227,8 +1297,8 @@ function saveBlob(name, blob) {
   setTimeout(() => URL.revokeObjectURL(url), 5000);
 }
 
-/* Read one file off the card, dumped raw -- these logs are plain ASCII, and base64
-   would cost 33% more time on a link that is already the bottleneck.
+/* Read one file off the card, dumped raw -- these logs are plain ASCII, and base64 would
+   be a third more to transfer for nothing.
 
    The raw REPL frames stdout with \x04, and readSerialLoop decodes UTF-8, so raw
    framing assumes the file contains neither a 0x04 nor a non-UTF-8 byte. That holds
@@ -1536,6 +1606,7 @@ $('serBtn').onclick = connectSerial;
 $('dcBtn').onclick = disconnect;
 $('cfgRead').onclick = readConfig;
 $('cfgWrite').onclick = writeConfig;
+$('rtcSync').onclick = syncRtc;
 $('sdFormat').onclick = formatSd;
 $('sdList').onclick = listSdLogs;
 $('cfgName').oninput = validateName;

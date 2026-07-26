@@ -22,6 +22,16 @@
     // sd_format.py is NOT ignored: the configurator's Format SD card button runs
     // `import sd_format` on the board, so the module has to be uploaded with the
     // project. It costs ~7 KB and nothing imports it at boot.
+    //
+    // This list only applies when the bare folder is opened, which makes this file
+    // workspace settings. Open Wenet_BLE_BMP680.code-workspace instead and it becomes
+    // folder settings, where VS Code drops machine-overridable keys and every
+    // micropico.* setting here is ignored. The .code-workspace carries a duplicate for
+    // that case -- change one, change the other.
+    //
+    // Entries use the **/ form the extension's own defaults use. Bare relative paths
+    // are documented to work too, but only relative to whichever sync folder is picked
+    // at upload time; **/<name> excludes by name wherever it sits.
     "micropico.pyIgnore": [
         "**/.picowgo",
         "**/.micropico",
@@ -34,9 +44,9 @@
         "**/venv",
         "**/.venv",
         "**/.idea",
-        "configurator.html",
-        "ble_test.py",
-        "sd_check.py"
+        "**/configurator.html",
+        "**/ble_test.py",
+        "**/sd_check.py"
     ],
     "python.analysis.typeshedPaths": [
         "~/.micropico-stubs/included",

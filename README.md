@@ -44,7 +44,7 @@ bottom of the window. `Ctrl+Shift+P` → **MicroPico: Connect** if it doesn't.
 
 ### 4. Configure before uploading
 
-**[main.py](main.py#L26)** — name your payload. This becomes part of the BLE packet `id`,
+**[main.py](main.py#L27)** — name your payload. This becomes part of the BLE packet `id`,
 the advertised BLE name, and the CSV filename:
 
 ```python
@@ -56,34 +56,33 @@ payload IDs reduce the amount of data conveyed through the BLE data link (max 25
 
 You don't have to edit the file for this: `payload_name` and `update_interval` can also be
 set from [the web configurator](#web-configurator), which writes a `config.json` that
-[main.py](main.py#L38-L70) reads at boot. Anything missing or invalid falls back to the
+[main.py](main.py#L47-L75) reads at boot. Anything missing or invalid falls back to the
 values in the source, so a bad config can't stop the payload from booting.
-
-**[ntp_sync.py](ntp_sync.py#L8-L9)** — only needed if you have a PCF8523 RTC to set:
-
-```python
-SSID = ''      # Change me!
-PASSWORD = ''  # Change me too!
-```
 
 ### 5. Upload to the Pico
 
 `Ctrl+Shift+P` → **MicroPico: Upload project to Pico**.
 
-This copies `main.py`, `ntp_sync.py`, and the whole `lib/` directory. **`lib/` is not
+This copies `main.py`, `sd_format.py`, and the whole `lib/` directory. **`lib/` is not
 optional** — it holds all the sensor drivers and the vendored `cbor2` encoder. If you copy
 files by hand, preserve the directory structure exactly, including `lib/cbor2/`.
 
 Only device-side code needs to go across, and this repo is already set up that way.
 `README.md`, the schematic, and the `.code-workspace` are skipped because their extensions
-aren't in `micropico.syncFileTypes`. `configurator.html` and `ble_test.py` *would* have been
-uploaded — `.html` and `.py` are both sync types — but they run on your computer, not the
-Pico, so [.vscode/settings.json](.vscode/settings.json) lists them in
-`micropico.pyIgnore`. That leaves about 107 KB of Python for the board.
+aren't in `micropico.syncFileTypes`. `configurator.html`, `ble_test.py`, and `sd_check.py`
+*would* have been uploaded — `.html` and `.py` are both sync types — but they run on your
+computer, not the Pico, so `micropico.pyIgnore` lists them. That leaves about 117 KB of
+Python for the board.
 
-If you add another host-side file, add it to `micropico.pyIgnore` too. Note that setting
-**replaces** the extension's default list rather than extending it, which is why the
-defaults are repeated there — deleting them would start syncing `.git` to the board.
+That ignore list is deliberately duplicated in both
+[.vscode/settings.json](.vscode/settings.json) and
+[the .code-workspace](Wenet_BLE_BMP680.code-workspace). Every `micropico.*` setting is
+declared machine-overridable scope: opening the bare folder makes `.vscode/settings.json`
+count as *workspace* settings, where it applies, but opening the `.code-workspace` demotes
+it to *folder* settings, where VS Code drops machine-overridable keys and the ignore list
+is silently disregarded. If you add another host-side file, add it to **both** lists. Note
+the setting **replaces** the extension's default rather than extending it, which is why the
+defaults are repeated — deleting them would start syncing `.git` to the board.
 
 MicroPython runs `main.py` automatically on every boot, so the payload starts as soon as
 the upload finishes or the board is power-cycled.
@@ -108,9 +107,9 @@ Addresses are reported in ascending order. Anything you've hung off J10 shows up
 list — if a sensor is missing here, it's a wiring or address problem, not a firmware one.
 
 The scan is followed by a **CSV** line of telemetry roughly every 500 ms — the same text
-that goes to the SD card ([main.py:348](main.py#L348)). There is no header row, and the
+that goes to the SD card ([main.py:358](main.py#L358)). There is no header row, and the
 columns after the first eight depend on which sensors were detected. If an LSM6DSOX is
-fitted its task prints its own interleaved lines ([main.py:429](main.py#L429)) with a
+fitted its task prints its own interleaved lines ([main.py:443](main.py#L443)) with a
 different layout, so read the columns against the task name in column 2, not by position
 alone. Each task writes to its own `data_log_<id>.csv` on the SD card.
 
@@ -120,18 +119,15 @@ its telemetry on the Nordic UART TX characteristic — see [Data output](#data-o
 
 Pressing **BOOTSEL** toggles the `debug` flag: the LED blinks ten times to confirm, then
 switches from a steady toggle to a short blip each cycle. Despite the comment at
-[main.py:145](main.py#L145), this only changes the LED — it does not change what is
+[main.py:194](main.py#L194), this only changes the LED — it does not change what is
 transmitted.
 
 ### 7. Set the hardware clock
 
-On the RAB HAT the PCF8523 is already fitted. Run [ntp_sync.py](ntp_sync.py) once from the
-REPL after filling in your Wi-Fi credentials. It pulls the time from `pool.ntp.org` and
-writes it to the RTC, which then keeps time on its ML621 coin cell. `main.py` reads it on
-every boot, so accurate log timestamps no longer need a network connection.
-
-Note the script ends in an infinite print loop — `Ctrl+C` when you're satisfied the time is
-correct.
+To set the hardware clock, connect the board to [the web configurator](#web-configurator)
+using USB. In the **ALL FIELDS** table, you can see the latest timestamp streaming from
+inbound packets. If this value does not reflect the current UTC time, click the
+**Sync RTC to UTC** button in the **Configuration** section.
 
 ## The RAB Pi Pico HAT
 
@@ -307,32 +303,6 @@ never got that far, say — the listing mounts it first.
 The row shows a running percentage. 115200 is nominal — the Pico is a USB CDC device, so
 the real rate is USB's, and a 100 KB log lands in about a second.
 
-The file is dumped **raw** rather than base64-encoded, which is a third less to transfer,
-and verified against a size the device reports immediately before the read. That check is
-not decoration: raw framing assumes the file holds no `0x04` (the REPL's end-of-output
-marker) and nothing that isn't valid UTF-8. Anything `sensor_task` wrote satisfies that,
-but a log truncated by a power cut mid-write might not — and that is exactly the file
-worth recovering. A truncated transfer lands short, a mangled byte re-encodes to three
-and lands long, so either way you get an error instead of a quietly corrupted CSV.
-
-The bytes go out through `sys.stdout.buffer`, not `sys.stdout`. The latter is MicroPython's
-*cooked* stream: it inserts a CR before every LF, which silently adds one byte per line —
-about 0.8% on a log of 127-byte rows. If a port ever lacks `sys.stdout.buffer`, the page
-detects the damage and undoes it, but only when removing the CRs makes the size match
-exactly, so the correction is never a guess.
-
-The size deliberately comes from the download, not from the listing. Every REPL round trip
-ends in a soft reboot, so between listing and downloading the payload is running again and
-appending to the very file being sized — `sensor_task_lsm6dso` queues a line every 50 ms,
-so the listing's figure is stale within seconds. Sizes shown in the file list are therefore
-a snapshot; the verification uses the live one.
-
-The logs have no header row on the card. The export adds one when it can be derived with
-certainty — the task from the filename, the optional sensor columns from the boot output —
-and only when the first data row has exactly that many columns. Otherwise the file is
-saved unchanged and the console says why. A header off by one column would be worse than
-no header at all.
-
 ### Format SD card
 
 **Format SD card** runs [`sd_format.py`](sd_format.py) on the board and streams its progress
@@ -367,10 +337,6 @@ the top of the file, then **MicroPico: Run current file**. To diagnose a card wi
 to it at all, [`sd_check.py`](sd_check.py) is read-only — it decodes sector 0, walks the whole
 card with single-block reads, and finds the highest SPI clock the card survives.
 
-There's also a **JP3 fitted** checkbox. Tick it when the HAT's ADC2 divider is installed and
-the page converts `adc2` counts to volts at 0.003223 V/count — see
-[the HAT](#the-rab-pi-pico-hat).
-
 ## Troubleshooting
 
 **`ImportError: no module named 'aioble'`** — some firmware builds don't bundle it. Install
@@ -393,11 +359,11 @@ isn't seated properly on the header.
 Move `JP1` to the other address.
 
 **Timestamps start at 2021-01-01** — no RTC was found, so the clock is unset. On a bare Pico
-fit a PCF8523; on the HAT check the ML621 coin cell, then run `ntp_sync.py`. Otherwise
-timestamps are relative to boot.
+fit a PCF8523; on the HAT check the ML621 coin cell, then run the time sync described in
+[Set the hardware clock](#7-set-the-hardware-clock). Otherwise timestamps are relative to boot.
 
 **`Unable to set up SD card!`** — make sure the card is formatted FAT32, and try a lower
-`baudrate` in [`sd_write_task()`](main.py#L428). On a bare Pico also check the SPI wiring
+`baudrate` in [`sd_write_task()`](main.py#L486). On a bare Pico also check the SPI wiring
 against the table above.
 
 **The payload doesn't appear in the configurator's Bluetooth picker** — the picker filters on
