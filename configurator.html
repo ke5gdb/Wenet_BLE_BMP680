@@ -28,23 +28,8 @@
     --sans: system-ui, -apple-system, "Segoe UI", sans-serif;
     --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   }
-  @media (prefers-color-scheme: dark) {
-    :root:where(:not([data-theme="light"])) {
-      color-scheme: dark;
-      --plane:   #0d0d0d;
-      --surface: #1a1a19;
-      --ink:     #ffffff;
-      --ink-2:   #c3c2b7;
-      --muted:   #898781;
-      --grid:    #2c2c2a;
-      --axis:    #383835;
-      --border:  rgba(255,255,255,0.10);
-      --series-1: #3987e5;
-      --track-normal:   #184f95;
-      --track-warning:  #5c4208;
-      --track-critical: #5c1f1f;
-    }
-  }
+  /* Light is the default whatever the OS prefers — the page is read next to a
+     bench and a datasheet, not at night. Dark is opt-in via the Theme button. */
   :root[data-theme="dark"] {
     color-scheme: dark;
     --plane:   #0d0d0d;
@@ -95,6 +80,10 @@
   button:hover:not(:disabled) { border-color: var(--axis); }
   button:disabled { opacity: 0.45; cursor: not-allowed; }
   button.primary { background: var(--series-1); border-color: var(--series-1); color: #fff; }
+  /* Outlined, not filled: it should read as destructive without competing with the
+     primary action for attention. Fills in on hover, once the pointer is committed. */
+  button.danger { border-color: var(--critical); color: var(--critical); }
+  button.danger:hover:not(:disabled) { background: var(--critical); border-color: var(--critical); color: #fff; }
   .row { display: flex; gap: 0.625rem; flex-wrap: wrap; align-items: center; }
 
   .status { display: inline-flex; align-items: center; gap: 0.4375rem; font-size: 0.875rem; color: var(--ink-2); }
@@ -157,6 +146,16 @@
   td.num { font-variant-numeric: tabular-nums; }
   td.key { font-family: var(--mono); font-size: 0.8125rem; }
   td.unit { color: var(--muted); }
+  /* Each firmware task emits its own packet with its own field set — group the
+     table by source so a second task cannot look like it overwrote the first. */
+  tr.srcrow th {
+    padding-top: 0.875rem; text-transform: none; letter-spacing: 0;
+    border-bottom: 1px solid var(--border);
+  }
+  tr.srcrow:first-child th { padding-top: 0; }
+  tr.srcrow .src { font-family: var(--mono); font-size: 0.8125rem; color: var(--ink); }
+  tr.srcrow .meta { font-weight: 400; color: var(--muted); margin-left: 0.5rem; font-variant-numeric: tabular-nums; }
+  tr.srcrow .meta.stale { color: var(--warning); }
 
   /* ---- console ---- */
   pre.log {
@@ -164,6 +163,17 @@
     font-family: var(--mono); font-size: 0.75rem; line-height: 1.45;
     color: var(--ink-2); white-space: pre-wrap; word-break: break-all;
   }
+
+  /* ---- SD file list ---- */
+  .filerow {
+    display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap;
+    padding: 0.5rem 0; border-bottom: 1px solid var(--grid); font-size: 0.875rem;
+  }
+  .filerow:first-child { margin-top: 0.875rem; border-top: 1px solid var(--grid); }
+  .filerow .name { font-family: var(--mono); font-size: 0.8125rem; overflow-wrap: anywhere; }
+  .filerow .size { color: var(--muted); font-variant-numeric: tabular-nums; }
+  .filerow .grow { flex: 1 1 auto; }
+  .filerow .prog { color: var(--ink-2); font-variant-numeric: tabular-nums; }
 
   .field { display: flex; flex-direction: column; gap: 0.25rem; }
   .field label { font-size: 0.75rem; color: var(--ink-2); }
@@ -215,7 +225,7 @@
   <div class="grid2">
     <div class="field">
       <label for="cfgName">payload_name</label>
-      <input type="text" id="cfgName" maxlength="16" placeholder="RAB_HAT" autocomplete="off">
+      <input type="text" id="cfgName" maxlength="32" placeholder="RAB_HAT" autocomplete="off">
       <span class="hint" id="nameHint">&nbsp;</span>
     </div>
     <div class="field">
@@ -230,6 +240,25 @@
     <span class="muted" style="font-size:0.8125rem">
       Requires serial. Writing interrupts the running payload and soft-reboots it.
     </span>
+  </div>
+</div>
+
+<!-- ------------------------------------------------------------------ sd card -->
+<div class="card">
+  <h2>SD card</h2>
+  <div class="row">
+    <button id="sdList" disabled>List logs</button>
+    <button class="danger" id="sdFormat" disabled>Format SD card</button>
+    <span class="muted" style="font-size:0.8125rem">
+      Both need serial and stop the payload while they run.
+    </span>
+  </div>
+  <div id="sdFiles"></div>
+  <div class="meter-note" style="margin-top:0.75rem">
+    <strong>List logs</strong> reads <code>/sd</code> and offers each <code>data_log_*.csv</code>
+    for download. Serial runs at 115200, about 11 KB/s, so a large log takes a while — the
+    row shows progress. <strong>Format</strong> erases the card, then verifies it: capacity
+    probe, FAT32 mkfs, mount and read-back. It needs <code>sd_format.py</code> on the board.
   </div>
 </div>
 
@@ -290,7 +319,9 @@
 /* =====================================================================
    UUIDs — see main.py. The firmware advertises ONLY the Wenet service,
    but writes its CBOR packets to the Nordic UART TX characteristic
-   (main.py:304 / main.py:399). The Wenet characteristic is registered
+   (main.py:346 / main.py:441 — one write per sensor task, each with its own
+   `id`, which is why telemetry state below is keyed by source). The Wenet
+   characteristic is registered
    and never written, so we filter on Wenet and read from NUS. Web
    Bluetooth requires NUS in optionalServices or access is denied.
    ===================================================================== */
@@ -300,8 +331,10 @@ const NUS_TX_CHAR   = '6e400003-b5a3-f393-e0a9-e50e24dcca9e';
 
 const PACKET_LIMIT = 254;   // build_packet() assert
 const PACKET_WARN  = 228;   // build_packet() warning
-const MAX_NAME_LEN = 8;     // 31-byte adv payload - 3 flags - 18 UUID - 2 header
+const MAX_NAME_LEN = 32;    // main.py's _MAX_NAME_LEN — the name in every packet `id`
+const ADV_NAME_LEN = 8;     // 31-byte adv payload - 3 flags - 18 UUID - 2 header
 const HISTORY      = 120;
+const DEFAULT_INTERVAL = 500;   // main.py's default, and the form placeholder
 
 const $ = (id) => document.getElementById(id);
 
@@ -457,39 +490,99 @@ function meta(k) {
 
 const ADC2_VOLTS_PER_COUNT = 0.003223;   // 10.2k/3.4k, JP3 fitted
 
-/* ============================ app state ============================== */
-const state = {
-  latest: {},               // last decoded packet
-  history: new Map(),       // field -> [{t, v}]
-  selected: '',
-  packets: 0,
-  lastSize: 0,
-  rateTimes: [],
-  transport: null,          // 'ble' | 'serial'
-  partial: false,
+/* ============================ app state ==============================
+   The firmware runs one asyncio task per sensor group (sensor_task and
+   sensor_task_lsm6dso in main.py), and each writes its own CBOR packet to
+   the same characteristic with its own `id` and its own disjoint field set.
+   So state is keyed by source id: a single `latest` object would be
+   overwritten twice a second and only the last task's fields would ever be
+   on screen. History is namespaced the same way, because `count` and `time`
+   exist in every packet and would otherwise interleave into one series. */
+const SEP = '::';                      // no field name in main.py contains it
+const NO_ID = '(no id)';
+const hkey = (src, k) => src + SEP + k;
+const unkey = (key) => {
+  const i = key.indexOf(SEP);
+  return i < 0 ? ['', key] : [key.slice(0, i), key.slice(i + SEP.length)];
 };
 
-function pushSample(k, v) {
+const state = {
+  sources: new Map(),       // id -> {latest, packets, lastSize, lastSeen, partial, rateTimes}
+  history: new Map(),       // "id::field" -> [{t, v}]
+  selected: '',             // a history key
+  packets: 0,
+  rateTimes: [],
+  transport: null,          // 'ble' | 'serial'
+};
+
+function rateOf(times) {
+  const now = Date.now();
+  while (times.length && now - times[0] > 5000) times.shift();
+  if (times.length < 2) return 0;
+  return (times.length - 1) / ((times[times.length - 1] - times[0]) / 1000);
+}
+
+/* Fields merged across every source, for the summary tiles. Distinct tasks
+   never emit the same sensor field, so the only collisions are time/id/count,
+   which the tiles do not read. */
+function mergedLatest() {
+  const out = {};
+  for (const s of state.sources.values()) Object.assign(out, s.latest);
+  return out;
+}
+
+function pushSample(src, k, v) {
   if (typeof v !== 'number' || !isFinite(v)) return;
-  let a = state.history.get(k);
-  if (!a) { a = []; state.history.set(k, a); }
+  const key = hkey(src, k);
+  let a = state.history.get(key);
+  if (!a) { a = []; state.history.set(key, a); }
   a.push({ t: Date.now(), v });
   if (a.length > HISTORY) a.shift();
 }
 
 function onPacket(obj, size, partial) {
-  state.latest = obj;
-  state.partial = !!partial;
-  state.packets++;
-  if (size != null) state.lastSize = size;
+  const src = (typeof obj.id === 'string' && obj.id) ? obj.id : NO_ID;
+  let s = state.sources.get(src);
+  if (!s) {
+    s = { latest: {}, packets: 0, lastSize: 0, lastSeen: 0, partial: false, rateTimes: [] };
+    state.sources.set(src, s);
+    log(`New telemetry source: ${src}`);
+  }
 
   const now = Date.now();
-  state.rateTimes.push(now);
-  while (state.rateTimes.length && now - state.rateTimes[0] > 5000) state.rateTimes.shift();
+  s.latest = obj;
+  s.partial = !!partial;
+  s.packets++;
+  s.lastSeen = now;
+  if (size != null) s.lastSize = size;
+  s.rateTimes.push(now);
 
-  for (const [k, v] of Object.entries(obj)) pushSample(k, v);
+  state.packets++;
+  state.rateTimes.push(now);
+
+  for (const [k, v] of Object.entries(obj)) pushSample(src, k, v);
 
   refreshFieldList();
+  renderAll();
+}
+
+/* payload_name is the prefix of every packet's `id`, so a config write renames
+   every source. Anything cached under the old id would sit in the table and the
+   field list forever as a source that has stopped publishing, and the chart
+   would keep plotting a series the device no longer emits — so drop all of it. */
+function resetTelemetry() {
+  state.sources.clear();
+  state.history.clear();
+  state.selected = '';
+  state.packets = 0;
+  state.rateTimes = [];
+  const sel = $('fieldSel');
+  sel.dataset.keys = '';                 // the memo in refreshFieldList()
+  sel.innerHTML = '<option value="">— waiting for data —</option>';
+  renderAll();
+}
+
+function renderAll() {
   renderTiles();
   renderMeter();
   renderTable();
@@ -506,16 +599,16 @@ function fmt(v, digits) {
 }
 
 function renderTiles() {
-  const rate = state.rateTimes.length > 1
-    ? (state.rateTimes.length - 1) / ((state.rateTimes[state.rateTimes.length - 1] - state.rateTimes[0]) / 1000)
-    : 0;
+  const rate = rateOf(state.rateTimes);
+  const ids = [...state.sources.keys()];
+  const merged = mergedLatest();
   const tiles = [
     ['Packets', state.packets.toLocaleString(), '', false],
     ['Rate', rate ? rate.toFixed(2) : '—', 'pkt/s', false],
-    ['Payload id', state.latest.id != null ? state.latest.id : '—', '', true],
-    ['Counter', state.latest.count != null ? state.latest.count.toLocaleString() : '—', '', false],
-    ['Input voltage', state.latest.v_in != null ? fmt(state.latest.v_in, 2) : '—', 'V', false],
-    ['Core temp', state.latest.pi_temp != null ? fmt(state.latest.pi_temp, 0) : '—', '°C', false],
+    ['Sources', ids.length ? String(ids.length) : '—', ids.length === 1 ? 'task' : 'tasks', false],
+    ['Payload ids', ids.length ? ids.join(' · ') : '—', '', true],
+    ['Input voltage', merged.v_in != null ? fmt(merged.v_in, 2) : '—', 'V', false],
+    ['Core temp', merged.pi_temp != null ? fmt(merged.pi_temp, 0) : '—', '°C', false],
   ];
   $('tiles').innerHTML = tiles.map(([l, v, u, isText]) => `
     <div class="tile">
@@ -524,8 +617,12 @@ function renderTiles() {
     </div>`).join('');
 }
 
+/* build_packet() asserts on each packet individually, so the meter tracks the
+   largest packet across sources rather than whichever one arrived last. */
 function renderMeter() {
-  const size = state.lastSize;
+  let size = 0, worst = '';
+  for (const [id, s] of state.sources) if (s.lastSize > size) { size = s.lastSize; worst = id; }
+
   const pct = Math.min(100, (size / PACKET_LIMIT) * 100);
   const st = size > PACKET_LIMIT ? 'critical' : size >= PACKET_WARN ? 'warning' : 'normal';
   $('meterState').dataset.state = st;
@@ -538,41 +635,88 @@ function renderMeter() {
     warning:  '⚠ Near the limit — above 228 bytes. Adding another sensor risks tripping the assert at 254.',
     critical: '✖ Over the 254-byte Wenet frame limit. Split the payload across two packets.',
   };
-  $('meterNote').textContent = notes[st];
+  $('meterNote').textContent = notes[st]
+    + (state.sources.size > 1 ? ` Largest of ${state.sources.size} sources: ${worst}.` : '');
 }
 
+/* One block per source. Every task's fields stay on screen even while another
+   task's packets are arriving in between. */
 function renderTable() {
-  const keys = Object.keys(state.latest);
-  if (!keys.length) return;
+  if (!state.sources.size) {
+    $('fieldRows').innerHTML = '<tr><td colspan="4" class="muted">No packets yet.</td></tr>';
+    return;
+  }
   const jp3 = $('jp3').checked;
-  $('fieldRows').innerHTML = keys.map((k) => {
-    const [unit, desc] = meta(k);
-    let v = state.latest[k];
-    let shown = (v instanceof Uint8Array)
-      ? [...v].map((b) => b.toString(16).padStart(2, '0')).join('')
-      : fmt(v);
-    let u = unit, d = desc;
-    if (k === 'adc2' && jp3 && typeof v === 'number') {
-      shown = `${fmt(v)} → ${(v * ADC2_VOLTS_PER_COUNT).toFixed(3)}`;
-      u = 'counts → V';
-      d = 'J2 with JP3 fitted: ×0.003223 V/count, 13.2 V full scale';
-    }
-    return `<tr><td class="key">${esc(k)}</td><td class="num">${esc(shown)}</td>
-            <td class="unit">${esc(u)}</td><td class="muted">${esc(d)}</td></tr>`;
-  }).join('');
+  const now = Date.now();
+  let html = '';
+
+  for (const [id, s] of state.sources) {
+    const keys = Object.keys(s.latest);
+    if (!keys.length) continue;
+
+    const age = (now - s.lastSeen) / 1000;
+    const r = rateOf(s.rateTimes);
+    const bits = [
+      `${s.packets.toLocaleString()} pkt`,
+      r ? `${r.toFixed(2)}/s` : null,
+      s.lastSize ? `${s.lastSize} B` : null,
+      `${age.toFixed(1)} s ago`,
+      s.partial ? 'partial decode' : null,
+    ].filter(Boolean);
+    // 5 s is ten default update intervals — long enough that a silent task is a fault.
+    const stale = age > 5;
+
+    html += `<tr class="srcrow"><th colspan="4"><span class="src">${esc(id)}</span>` +
+            `<span class="meta${stale ? ' stale' : ''}">${esc(bits.join(' · '))}` +
+            `${stale ? ' — no recent packets' : ''}</span></th></tr>`;
+
+    html += keys.map((k) => {
+      const [unit, desc] = meta(k);
+      let v = s.latest[k];
+      let shown = (v instanceof Uint8Array)
+        ? [...v].map((b) => b.toString(16).padStart(2, '0')).join('')
+        : fmt(v);
+      let u = unit, d = desc;
+      if (k === 'adc2' && jp3 && typeof v === 'number') {
+        shown = `${fmt(v)} → ${(v * ADC2_VOLTS_PER_COUNT).toFixed(3)}`;
+        u = 'counts → V';
+        d = 'J2 with JP3 fitted: ×0.003223 V/count, 13.2 V full scale';
+      }
+      return `<tr><td class="key">${esc(k)}</td><td class="num">${esc(shown)}</td>
+              <td class="unit">${esc(u)}</td><td class="muted">${esc(d)}</td></tr>`;
+    }).join('');
+  }
+
+  $('fieldRows').innerHTML = html || '<tr><td colspan="4" class="muted">No packets yet.</td></tr>';
 }
 
+/* Options carry the namespaced history key; the label stays the bare field
+   name, with the source on the optgroup once more than one is present. */
 function refreshFieldList() {
-  const numeric = [...state.history.keys()].filter((k) => state.history.get(k).length > 0);
+  const groups = [];
+  for (const id of state.sources.keys()) {
+    const fields = [];
+    for (const [key, arr] of state.history) {
+      const [src, k] = unkey(key);
+      if (src === id && arr.length) fields.push(k);
+    }
+    if (fields.length) groups.push([id, fields]);
+  }
+
   const sel = $('fieldSel');
-  const current = state.selected || sel.value;
-  const wanted = numeric.join('|');
+  const wanted = groups.map(([id, f]) => `${id}>${f.join('|')}`).join(';');
   if (sel.dataset.keys === wanted) return;
   sel.dataset.keys = wanted;
-  sel.innerHTML = numeric.map((k) => `<option value="${esc(k)}">${esc(k)}</option>`).join('')
-                  || '<option value="">— waiting for data —</option>';
-  const pick = numeric.includes(current) ? current
-             : numeric.includes('pi_temp') ? 'pi_temp' : numeric[0] || '';
+
+  const multi = groups.length > 1;
+  sel.innerHTML = groups.map(([id, fields]) => {
+    const opts = fields.map((k) => `<option value="${esc(hkey(id, k))}">${esc(k)}</option>`).join('');
+    return multi ? `<optgroup label="${esc(id)}">${opts}</optgroup>` : opts;
+  }).join('') || '<option value="">— waiting for data —</option>';
+
+  const all = groups.flatMap(([id, fields]) => fields.map((k) => hkey(id, k)));
+  const pick = all.includes(state.selected) ? state.selected
+             : all.find((key) => unkey(key)[1] === 'pi_temp') || all[0] || '';
   sel.value = pick;
   state.selected = pick;
 }
@@ -597,6 +741,7 @@ function niceTicks(min, max, count) {
 function renderChart() {
   const svg = $('chart');
   const key = state.selected;
+  const [, field] = key ? unkey(key) : ['', ''];
   const data = key ? (state.history.get(key) || []) : [];
   if (data.length < 2) {
     svg.innerHTML = `<text class="tick" x="${CH.w / 2}" y="${CH.h / 2}" text-anchor="middle">
@@ -604,7 +749,7 @@ function renderChart() {
     return;
   }
 
-  const jp3 = $('jp3').checked && key === 'adc2';
+  const jp3 = $('jp3').checked && field === 'adc2';
   const scale = jp3 ? ADC2_VOLTS_PER_COUNT : 1;
   const vals = data.map((d) => d.v * scale);
   const ticks = niceTicks(Math.min(...vals), Math.max(...vals), 4);
@@ -625,7 +770,7 @@ function renderChart() {
 
   const spanS = Math.round((data[data.length - 1].t - data[0].t) / 1000);
   const last = vals[vals.length - 1];
-  const [unit] = jp3 ? ['V'] : meta(key);
+  const [unit] = jp3 ? ['V'] : meta(field);
 
   svg.innerHTML = `
     ${gridEls}
@@ -693,6 +838,10 @@ function setConn(kind, text) {
   const serial = state.transport === 'serial';
   $('cfgRead').disabled = !serial;
   $('cfgWrite').disabled = !serial;
+  $('sdFormat').disabled = !serial;
+  $('sdList').disabled = !serial;
+  // Per-file Download buttons belong to a list that may be stale on a new connection.
+  $('sdFiles').querySelectorAll('button').forEach((b) => { b.disabled = !serial; });
   $('dcBtn').disabled = !state.transport;
   $('btBtn').disabled = !!state.transport;
   $('serBtn').disabled = !!state.transport;
@@ -784,25 +933,91 @@ async function readSerialLoop() {
   }
 }
 
-/* main.py prints csv_data (main.py:306). The first eight columns are fixed;
-   everything after depends on which sensors were detected, and there is no
-   header row, so trailing columns are surfaced positionally. */
-const CSV_HEAD = ['time', 'id', 'count', 'v_in', 'pi_temp', 'adc0', 'adc1', 'adc2'];
+/* Every task prints its own csv_data with no header row, so the columns are
+   read positionally off the task name in column 2 (`payload_name + '_' + sensor_name`).
+   These are the fixed leading columns; sensor_task appends more per detected sensor. */
+const CSV_HEADS = {
+  ENV: ['time', 'id', 'count', 'v_in', 'pi_temp', 'adc0', 'adc1', 'adc2'],
+  LSM6DSOX: ['time', 'id', 'count', 'a_x', 'a_y', 'a_z', 'g_x', 'g_y', 'g_z', 'fall_cnt', 'imu_temp'],
+};
+
+/* sensor_task() appends one block of columns per detected sensor, in this order,
+   using the same names it puts in the CBOR packet. With no header row the only way
+   to recover those names is to watch the detection lines main() prints at boot —
+   which is why Read and Write, both of which reboot the board, also re-teach this. */
+const CSV_OPTIONAL = [
+  [/^LIS3MDL detected/,       ['mag_x', 'mag_y', 'mag_z']],
+  [/^BMP280 detected/,        ['bmp_temp', 'bmp_pres']],
+  [/^BME680 detected/,        ['bme_temp', 'bme_pres', 'bme_humi']],
+  [/^BME280 detected/,        ['bme280_temp', 'bme280_pres', 'bme280_humi']],
+  [/^HDC302x detected/,       ['hdc_temp', 'hdc_humi']],
+  [/^MAX31725 detected/,      ['max31725_temp']],
+  [/^Honeywell HSC detected/, ['hsc_temp', 'hsc_pres']],
+];
+const detected = new Set();     // indices into CSV_OPTIONAL
+let extraWarn = '';             // last unnamed-column shape reported, to log it once
+
+function learnSensors(line) {
+  // main() prints this before it scans, so it marks a reboot: forget the old set.
+  if (/^Checking for I2C devices/.test(line)) { detected.clear(); extraWarn = ''; return; }
+  CSV_OPTIONAL.forEach(([re], i) => { if (re.test(line)) detected.add(i); });
+}
+
+function optionalFields() {
+  const out = [];
+  CSV_OPTIONAL.forEach(([, fields], i) => { if (detected.has(i)) out.push(...fields); });
+  return out;
+}
+
+function csvValue(raw) {
+  const n = Number(raw);
+  return (raw === '' || Number.isNaN(n)) ? raw : n;
+}
+
+/* Names the columns that follow the fixed head. The OneWire ones label themselves —
+   sensor_task emits `temp-<addr>,<value>` pairs at the tail. The rest are positional,
+   so they are only named when the count matches what the boot output announced: a
+   sensor that hits a comms error drops its block for that line, and names shifted one
+   column left would be worse than no names at all. */
+function parseExtras(rest, obj) {
+  // The OneWire pairs are the tail; walk back over them to find where they start.
+  let ow = rest.length;
+  while (ow >= 2 && /^temp-[0-9a-f]+$/i.test(rest[ow - 2])) ow -= 2;
+
+  const unnamed = rest.slice(0, ow);
+  const names = optionalFields();
+  const matched = names.length === unnamed.length;
+  unnamed.forEach((raw, i) => { obj[matched ? names[i] : `extra${i}`] = csvValue(raw); });
+
+  // After the sensor blocks, so the table lists fields in the order the CSV has them.
+  for (let i = ow; i + 1 < rest.length; i += 2) obj[rest[i]] = csvValue(rest[i + 1]);
+
+  if (matched || !unnamed.length) return;
+  const warn = `${names.length}/${unnamed.length}`;
+  if (warn === extraWarn) return;           // once per shape, not once per packet
+  extraWarn = warn;
+  log(names.length
+    ? `${unnamed.length} unnamed CSV columns but the boot output announced ${names.length} — showing them as extraN. A sensor read probably failed this cycle.`
+    : `${unnamed.length} unnamed CSV columns. The CSV has no header, so field names come from the detection lines at boot — reboot the board (Read from device does that) to label them.`,
+    'err');
+}
 
 function handleSerialLine(line) {
+  learnSensors(line);
+
   const cols = line.split(',').map((s) => s.trim()).filter((s, i, a) => !(i === a.length - 1 && s === ''));
-  const looksLikeCsv = cols.length >= CSV_HEAD.length && /^\d{4}-\d{2}-\d{2} /.test(cols[0]);
-  if (!looksLikeCsv) { log(line, 'rx'); return; }
+  if (cols.length < 3 || !/^\d{4}-\d{2}-\d{2} /.test(cols[0])) { log(line, 'rx'); return; }
+
+  const task = cols[1].slice(cols[1].lastIndexOf('_') + 1);
+  const head = CSV_HEADS[task] || CSV_HEADS.ENV;
+  if (cols.length < head.length) { log(line, 'rx'); return; }
 
   const obj = {};
-  CSV_HEAD.forEach((k, i) => {
+  head.forEach((k, i) => {
     const raw = cols[i];
-    obj[k] = (k === 'time' || k === 'id') ? raw : (Number.isNaN(Number(raw)) ? raw : Number(raw));
+    obj[k] = (k === 'time' || k === 'id') ? raw : csvValue(raw);
   });
-  cols.slice(CSV_HEAD.length).forEach((raw, i) => {
-    const n = Number(raw);
-    obj[Number.isNaN(n) ? `col${CSV_HEAD.length + i}` : `extra${i}`] = Number.isNaN(n) ? raw : n;
-  });
+  parseExtras(cols.slice(head.length), obj);
   onPacket(obj, null, false);
 }
 
@@ -820,9 +1035,31 @@ function waitFor(needle, timeoutMs) {
   });
 }
 
-/* Run one snippet in the MicroPython raw REPL, return its stdout. */
-async function replExec(code) {
+/* Forward complete stdout lines as they arrive, so a long job isn't a silent wait.
+   The raw REPL echoes "OK" the moment it starts executing, so everything after that
+   marker is live output. */
+function tailProgress(onLine) {
+  let sent = 0;
+  return setInterval(() => {
+    const i = replBuf.indexOf('OK');
+    if (i < 0) return;
+    const body = replBuf.slice(i + 2);
+    let nl;
+    while ((nl = body.indexOf('\n', sent)) >= 0) {
+      const line = body.slice(sent, nl).replace(/\r$/, '').replace(/\x04/g, '');
+      sent = nl + 1;
+      if (line.trim()) onLine(line);
+    }
+  }, 150);
+}
+
+/* Run one snippet in the MicroPython raw REPL, return its stdout.
+   opts.timeoutMs extends the wait for the result (mkfs takes tens of seconds);
+   opts.onLine streams stdout lines out while the job is still running. */
+async function replExec(code, opts) {
+  opts = opts || {};
   replMode = true; replBuf = '';
+  let tail = null;
   try {
     await sendRaw(CTRL_C); await sendRaw(CTRL_C);         // interrupt main.py
     await new Promise((r) => setTimeout(r, 120));
@@ -832,15 +1069,25 @@ async function replExec(code) {
     replBuf = '';
     await sendRaw(code); await sendRaw(CTRL_D);            // submit + execute
     await waitFor('OK', 4000);
+    if (opts.onLine) tail = tailProgress(opts.onLine);
     // Response is: OK <stdout> \x04 <stderr> \x04 >
-    await waitFor('\x04', 6000);
+    await waitFor('\x04', opts.timeoutMs || 6000);
     const after = replBuf.slice(replBuf.indexOf('OK') + 2);
     const parts = after.split('\x04');
     return { out: (parts[0] || '').trim(), err: (parts[1] || '').trim() };
   } finally {
+    if (tail) clearInterval(tail);
     try { await sendRaw(CTRL_B); } catch {}               // back to friendly REPL
     replMode = false; replBuf = '';
   }
+}
+
+/* replExec() gets into the REPL by killing main.py with Ctrl-C, and Ctrl-B only
+   returns to the friendly REPL — the payload stays dead and telemetry stops. Ctrl-D
+   there is a soft reset, which reruns main.py. Every REPL round trip has to end with
+   one, or reading the config silently kills the stream. */
+async function softReboot() {
+  await sendRaw(CTRL_D);
 }
 
 async function readConfig() {
@@ -857,25 +1104,46 @@ async function readConfig() {
       log('No config.json on the device — it is running the defaults in main.py.');
       $('cfgName').value = ''; $('cfgInterval').value = '';
       validateName();
-      return;
+    } else {
+      log(`config.json: ${out}`, 'rx');
+      const cfg = JSON.parse(out);
+      if (typeof cfg.payload_name === 'string') $('cfgName').value = cfg.payload_name;
+      if (Number.isFinite(cfg.update_interval)) $('cfgInterval').value = cfg.update_interval;
+      validateName();
+      log('Config loaded into the form.');
     }
-    log(`config.json: ${out}`, 'rx');
-    const cfg = JSON.parse(out);
-    if (typeof cfg.payload_name === 'string') $('cfgName').value = cfg.payload_name;
-    if (Number.isFinite(cfg.update_interval)) $('cfgInterval').value = cfg.update_interval;
-    validateName();
-    log('Config loaded into the form. The payload is stopped — write, or power-cycle to resume.');
   } catch (e) {
     log(`Read failed: ${e.message}`, 'err');
+  } finally {
+    try {
+      await softReboot();
+      log('Soft reboot sent — the payload is running again, telemetry resumes shortly.');
+    } catch (e) {
+      log(`Could not restart the payload: ${e.message}. Power-cycle the board.`, 'err');
+    }
   }
 }
 
 async function writeConfig() {
   const name = $('cfgName').value.trim();
-  const interval = parseInt($('cfgInterval').value, 10);
-  if (name && name.length > MAX_NAME_LEN) {
-    log(`payload_name must be ${MAX_NAME_LEN} characters or fewer — the advertising payload has no room for more.`, 'err');
+  const rawInterval = $('cfgInterval').value.trim();
+  if (name && utf8len(name) > MAX_NAME_LEN) {
+    log(`payload_name must be ${MAX_NAME_LEN} bytes or fewer — main.py truncates anything longer.`, 'err');
     return;
+  }
+  if (name && utf8len(name) > ADV_NAME_LEN) {
+    log(`Note: the advert will carry "${truncUtf8(name, ADV_NAME_LEN)}" — only ${ADV_NAME_LEN} bytes fit. Packets carry the full name.`);
+  }
+  // Naming a payload and leaving the rate alone is the common case, so fill in
+  // the default rather than refusing — config.json always pins both keys.
+  let interval;
+  if (!rawInterval) {
+    if (!name) { log('Nothing to write — enter a payload_name, an update_interval, or both.', 'err'); return; }
+    interval = DEFAULT_INTERVAL;
+    $('cfgInterval').value = String(interval);
+    log(`No update_interval entered — using the ${DEFAULT_INTERVAL} ms default.`);
+  } else {
+    interval = parseInt(rawInterval, 10);
   }
   if (!Number.isFinite(interval) || interval < 50 || interval > 60000) {
     log('update_interval must be an integer from 50 to 60000 ms.', 'err');
@@ -888,6 +1156,7 @@ async function writeConfig() {
 
   // Ship the bytes as hex so no quoting or newline can corrupt the paste.
   const hex = [...new TextEncoder().encode(json)].map((b) => b.toString(16).padStart(2, '0')).join('');
+  let wrote = false;
   try {
     log(`Writing config.json: ${json}`, 'tx');
     const { out, err } = await replExec(
@@ -895,13 +1164,326 @@ async function writeConfig() {
       `open('config.json','wb').write(binascii.unhexlify('${hex}'))\n` +
       "print('__WROTE__', open('config.json').read())\n"
     );
-    if (err) { log(`Device stderr: ${err}`, 'err'); return; }
-    if (!out.includes('__WROTE__')) { log(`Unexpected reply: ${out}`, 'err'); return; }
-    log(`Verified on device: ${out.replace('__WROTE__', '').trim()}`, 'rx');
-    await sendRaw(CTRL_D);                                 // soft reboot
-    log('Soft reboot sent. main.py will reload and print its config line.');
+    if (err) log(`Device stderr: ${err}`, 'err');
+    else if (!out.includes('__WROTE__')) log(`Unexpected reply: ${out}`, 'err');
+    else {
+      log(`Verified on device: ${out.replace('__WROTE__', '').trim()}`, 'rx');
+      wrote = true;
+    }
   } catch (e) {
     log(`Write failed: ${e.message}`, 'err');
+  } finally {
+    // Reboot even after a failed write — otherwise the board is left sitting in
+    // the REPL with the payload killed and nothing streaming.
+    try {
+      await softReboot();
+      log(wrote ? 'Soft reboot sent. main.py will reload and print its config line.'
+                : 'Soft reboot sent — config unchanged, the payload is running again.');
+    } catch (e) {
+      log(`Could not restart the payload: ${e.message}. Power-cycle the board.`, 'err');
+    }
+    if (wrote) {
+      resetTelemetry();
+      log('Cleared cached telemetry — packets from before the write carry the old payload id.');
+    }
+  }
+}
+
+/* =========================== SD card export =========================
+   The logs live on the card, so recovering a flight means either pulling the card
+   or reading it out over the REPL. This does the latter.
+   ==================================================================== */
+const SD_MOUNT_BAUD = 1_320_000;   // conservative; serial is the bottleneck anyway
+const DOWNLOAD_TIMEOUT = 900000;   // 15 min: 115200 baud is roughly 11 KB/s
+
+/* /sd is normally already mounted by sd_write_task, but not if the payload never got
+   that far -- so fall back to mounting it here before listing. */
+const SD_LIST_CODE =
+  "import os\n" +
+  "try:\n" +
+  "    _n = os.listdir('/sd')\n" +
+  "except OSError:\n" +
+  "    import vfs, sdcard\n" +
+  "    from machine import SPI, Pin\n" +
+  `    _spi = SPI(0, sck=Pin(18), mosi=Pin(19), miso=Pin(16), baudrate=${SD_MOUNT_BAUD})\n` +
+  `    _sd = sdcard.SDCard(spi=_spi, cs=Pin(17), baudrate=${SD_MOUNT_BAUD})\n` +
+  "    vfs.mount(_sd, '/sd')\n" +
+  "    _n = os.listdir('/sd')\n" +
+  "for _x in _n:\n" +
+  "    if _x.endswith('.csv'):\n" +
+  "        print('__F__', _x, os.stat('/sd/' + _x)[6])\n";
+
+function fmtBytes(n) {
+  if (n < 1024) return `${Math.round(n)} B`;
+  if (n < 1048576) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / 1048576).toFixed(2)} MB`;
+}
+
+function saveBlob(name, blob) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = name;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 5000);
+}
+
+/* Read one file off the card, dumped raw -- these logs are plain ASCII, and base64
+   would cost 33% more time on a link that is already the bottleneck.
+
+   The raw REPL frames stdout with \x04, and readSerialLoop decodes UTF-8, so raw
+   framing assumes the file contains neither a 0x04 nor a non-UTF-8 byte. That holds
+   for anything sensor_task wrote, but not necessarily for a log truncated by a power
+   cut mid-write -- which is exactly the file worth recovering. Hence expectSize, from
+   os.stat: a truncation lands short, and a byte mangled into U+FFFD re-encodes to
+   three and lands long. Either way the mismatch is caught rather than silently saved.
+
+   The size is taken on the device, immediately before the read, rather than reused
+   from the listing: every REPL round trip ends in a soft reboot, so between listing
+   and downloading the payload is running again and appending to the very file being
+   sized. sensor_task_lsm6dso queues a line every 50 ms, so that stale size goes
+   wrong within seconds.
+
+   It drives the REPL directly instead of going through replExec so it can report
+   progress on a transfer measured in minutes. */
+async function replDownload(path, onProgress) {
+  replMode = true; replBuf = '';
+  try {
+    await sendRaw(CTRL_C); await sendRaw(CTRL_C);
+    await new Promise((r) => setTimeout(r, 120));
+    replBuf = '';
+    await sendRaw(CTRL_A);
+    await waitFor('raw REPL', 3000);
+    replBuf = '';
+    // Chunked: a flight log is far bigger than the Pico's RAM, so no .read() of the
+    // whole file. And sys.stdout.buffer, not sys.stdout: the latter is the cooked
+    // stream, which inserts a CR before every LF and so adds one byte per line.
+    await sendRaw(
+      "import sys, os\n" +
+      `_p = ${JSON.stringify(path)}\n` +
+      "try:\n" +
+      "    _w = sys.stdout.buffer.write\n" +
+      "except AttributeError:\n" +
+      "    _w = sys.stdout.write\n" +
+      "sys.stdout.write('__SIZE__%d\\n' % os.stat(_p)[6])\n" +
+      "_f = open(_p, 'rb')\n" +
+      "while True:\n" +
+      "    _b = _f.read(1024)\n" +
+      "    if not _b: break\n" +
+      "    _w(_b)\n" +
+      "_f.close()\n"
+    );
+    await sendRaw(CTRL_D);
+    await waitFor('OK', 5000);
+    replBuf = replBuf.slice(replBuf.indexOf('OK') + 2);
+
+    // The size line comes first. A missing file fails at os.stat, so the EOT can
+    // arrive instead -- fall through to the traceback below rather than time out.
+    let expectSize = null;
+    const tSize = Date.now();
+    for (;;) {
+      const nl = replBuf.indexOf('\n');
+      const eot = replBuf.indexOf('\x04');
+      if (eot >= 0 && (nl < 0 || eot < nl)) break;
+      if (nl >= 0) {
+        const m = replBuf.slice(0, nl).match(/^__SIZE__(\d+)/);
+        if (!m) throw new Error(`unexpected reply: ${replBuf.slice(0, nl).trim()}`);
+        expectSize = +m[1];
+        replBuf = replBuf.slice(nl + 1);
+        break;
+      }
+      if (Date.now() - tSize > 10000) throw new Error('timed out waiting for the file size');
+      await new Promise((r) => setTimeout(r, 15));
+    }
+
+    // Response is OK <stdout> \x04 <stderr> \x04 >, so two EOTs means complete.
+    // Only the newly arrived tail is scanned each pass -- re-scanning a buffer this
+    // large sixty times a second would cost more than the transfer.
+    const t0 = Date.now();
+    let scanned = 0;
+    for (;;) {
+      const first = replBuf.indexOf('\x04', scanned);
+      if (first >= 0 && replBuf.indexOf('\x04', first + 1) >= 0) break;
+      scanned = Math.max(0, replBuf.length - 1);
+      if (Date.now() - t0 > DOWNLOAD_TIMEOUT) throw new Error('download timed out');
+      onProgress(replBuf.length, expectSize);
+      await new Promise((r) => setTimeout(r, 15));
+    }
+
+    const eot = replBuf.indexOf('\x04');
+    const err = (replBuf.slice(eot + 1).split('\x04')[0] || '').trim();
+    if (err) throw new Error(err.split('\n').pop());
+    if (expectSize == null) throw new Error('the device never reported a file size');
+
+    const text = replBuf.slice(0, eot);
+    let bytes = new TextEncoder().encode(text);
+    if (bytes.length !== expectSize) {
+      // Belt and braces for the cooked-stdout case above, in case a port lacks
+      // sys.stdout.buffer: CR-before-LF is exactly reversible, and the size match is
+      // the proof, so this only ever fires when the correction is certainly right.
+      const undone = new TextEncoder().encode(text.replace(/\r\n/g, '\n'));
+      if (undone.length === expectSize) {
+        log(`Undid CRLF translation on ${bytes.length - undone.length} line endings.`);
+        bytes = undone;
+      } else {
+        throw new Error(`size mismatch — got ${bytes.length} bytes, the file is ${expectSize}. `
+          + 'The file may hold bytes the raw text transfer cannot carry intact.');
+      }
+    }
+    return bytes;
+  } finally {
+    try { await sendRaw(CTRL_B); } catch {}
+    replMode = false; replBuf = '';
+  }
+}
+
+/* The logs have no header row (see handleSerialLine). Add one on export when it can
+   be derived with certainty -- the task from the filename, the optional columns from
+   the boot output -- and only when the first data row has exactly that many columns.
+   A header that is off by one column is worse than none at all. */
+function withHeader(name, bytes) {
+  const text = new TextDecoder().decode(bytes);
+  const end = text.indexOf('\n');
+  const first = (end < 0 ? text : text.slice(0, end)).trim();
+  if (!first) return text;
+
+  const cols = first.split(',');
+  const trailing = cols[cols.length - 1] === '';
+  if (trailing) cols.pop();
+
+  const base = name.replace(/\.csv$/i, '');
+  const kind = base.slice(base.lastIndexOf('_') + 1);
+  const head = kind === 'LSM6DSOX'
+    ? CSV_HEADS.LSM6DSOX
+    : CSV_HEADS.ENV.concat(optionalFields());
+
+  if (cols.length !== head.length) {
+    log(`${name}: ${cols.length} columns but ${head.length} known names — saved without a header row.`);
+    return text;
+  }
+  return head.join(',') + (trailing ? ',' : '') + '\n' + text;
+}
+
+async function downloadSdLog(file, btn, progEl) {
+  btn.disabled = true;
+  const t0 = Date.now();
+  try {
+    log(`Downloading ${file.name} (${fmtBytes(file.size)})…`, 'tx');
+    let painted = 0;
+    // The listing's size is only a fallback for the progress bar — the payload has
+    // been logging since then, so the device's own figure is the real one.
+    const bytes = await replDownload('/sd/' + file.name, (n, size) => {
+      if (Date.now() - painted < 200) return;
+      painted = Date.now();
+      const total = size || file.size;
+      const pct = total ? Math.min(100, Math.round((100 * n) / total)) : 0;
+      progEl.textContent = `${pct}% · ${fmtBytes(n)}`;
+    });
+    progEl.textContent = fmtBytes(bytes.length);
+    saveBlob(file.name, new Blob([withHeader(file.name, bytes)], { type: 'text/csv' }));
+    const secs = (Date.now() - t0) / 1000;
+    log(`Saved ${file.name} — ${fmtBytes(bytes.length)} in ${secs.toFixed(0)} s (${fmtBytes(bytes.length / secs)}/s).`);
+  } catch (e) {
+    progEl.textContent = 'failed';
+    log(`Download failed: ${e.message}`, 'err');
+  } finally {
+    try { await softReboot(); } catch {}
+    btn.disabled = state.transport !== 'serial';
+  }
+}
+
+function renderSdFiles(files) {
+  const host = $('sdFiles');
+  if (!files.length) {
+    host.innerHTML = '<div class="filerow"><span class="muted">No data_log CSVs on the card.</span></div>';
+    return;
+  }
+  host.innerHTML = files.map((f, i) => `
+    <div class="filerow">
+      <span class="name">${esc(f.name)}</span>
+      <span class="size">${esc(fmtBytes(f.size))}</span>
+      <span class="grow"></span>
+      <span class="prog" id="sdProg${i}"></span>
+      <button data-i="${i}">Download</button>
+    </div>`).join('');
+  host.querySelectorAll('button').forEach((b) => {
+    const i = +b.dataset.i;
+    b.onclick = () => downloadSdLog(files[i], b, $('sdProg' + i));
+  });
+}
+
+async function listSdLogs() {
+  $('sdList').disabled = true;
+  try {
+    log('Reading the card…', 'tx');
+    const { out, err } = await replExec(SD_LIST_CODE, { timeoutMs: 30000 });
+    if (err) {
+      log(`Device stderr: ${err}`, 'err');
+      log('Could not read /sd. Is a card fitted and formatted?', 'err');
+      return;
+    }
+    const files = [];
+    for (const line of out.split('\n')) {
+      const m = line.match(/^__F__ (.+) (\d+)\s*$/);
+      if (m) files.push({ name: m[1].trim(), size: +m[2] });
+    }
+    files.sort((a, b) => a.name.localeCompare(b.name));
+    renderSdFiles(files);
+    const bytes = files.reduce((t, f) => t + f.size, 0);
+    log(files.length
+      ? `${files.length} log file(s), ${fmtBytes(bytes)} total.`
+      : 'No data_log CSVs on the card yet.');
+  } catch (e) {
+    log(`Listing failed: ${e.message}`, 'err');
+  } finally {
+    try { await softReboot(); } catch {}
+    $('sdList').disabled = state.transport !== 'serial';
+  }
+}
+
+/* Formatting is the one irreversible thing this page can do to the hardware, so it
+   asks first and names what is lost. sd_format.py does the work and its own capacity
+   probe -- if the card lies about its size it refuses to format rather than hand back
+   a filesystem that corrupts mid-flight. */
+async function formatSd() {
+  const warn = 'Format the SD card?\n\n'
+    + 'This ERASES everything on it, including flight logs you have not copied off yet.\n\n'
+    + 'The payload stops while it runs, and the whole job takes a minute or two.';
+  if (!window.confirm(warn)) { log('Format cancelled.'); return; }
+
+  $('sdFormat').disabled = true;
+  let ok = false;
+  try {
+    log('Formatting the SD card. This takes a minute or two — do not disconnect.', 'tx');
+    const { out, err } = await replExec(
+      "import sd_format\n" +
+      "print('__RESULT__', sd_format.format_sd())\n",
+      { timeoutMs: 300000, onLine: (line) => log(line, 'rx') }
+    );
+    if (err) {
+      log(`Device stderr: ${err}`, 'err');
+      if (/ImportError|no module named/i.test(err)) {
+        log('sd_format.py is not on the board. Upload the project — and check it is not', 'err');
+        log('listed in micropico.pyIgnore in .vscode/settings.json.', 'err');
+      }
+    } else if (out.includes('__RESULT__ True')) {
+      ok = true;
+    } else if (out.includes('__RESULT__ False')) {
+      log('Format did not complete. The device output above says which stage failed.', 'err');
+    } else {
+      log(`Unexpected reply: ${out}`, 'err');
+    }
+  } catch (e) {
+    log(`Format failed: ${e.message}`, 'err');
+  } finally {
+    // Same rule as the config paths: never leave the board sitting in the REPL.
+    try {
+      await softReboot();
+      log(ok ? 'Card formatted and verified. Soft reboot sent — logging resumes on the fresh card.'
+             : 'Soft reboot sent — the payload is running again.');
+    } catch (e) {
+      log(`Could not restart the payload: ${e.message}. Power-cycle the board.`, 'err');
+    }
+    $('sdFormat').disabled = state.transport !== 'serial';
   }
 }
 
@@ -918,14 +1500,34 @@ async function disconnect() {
 }
 
 /* ============================== wiring =============================== */
+/* aioble encodes the advertised name as UTF-8, so both limits are byte budgets. */
+function utf8len(s) { return new TextEncoder().encode(s).length; }
+function truncUtf8(s, limit) {
+  while (utf8len(s) > limit) s = s.slice(0, -1);
+  return s;
+}
+
 function validateName() {
   const v = $('cfgName').value;
-  const bytes = 21 + 2 + new TextEncoder().encode(v).length;   // flags + UUID + header + name
   const hint = $('nameHint');
-  if (!v) { hint.textContent = `Blank keeps main.py's default. Max ${MAX_NAME_LEN} chars.`; hint.classList.remove('bad'); return; }
-  const over = v.length > MAX_NAME_LEN;
-  hint.textContent = `${v.length}/${MAX_NAME_LEN} chars — advertising payload ${bytes}/31 bytes`
-    + (over ? ' · too long, aioble.advertise() would fail' : '');
+  if (!v) {
+    hint.textContent = `Blank keeps main.py's default. Up to ${MAX_NAME_LEN} bytes; the advert carries the first ${ADV_NAME_LEN}.`;
+    hint.classList.remove('bad');
+    return;
+  }
+  const bytes = utf8len(v);
+  const over = bytes > MAX_NAME_LEN;
+  let msg = `${bytes}/${MAX_NAME_LEN} bytes`;
+  if (over) {
+    msg += ' — too long, main.py will truncate it';
+  } else if (bytes > ADV_NAME_LEN) {
+    // Not an error: the advert is truncated, the packet `id` keeps the whole name.
+    msg += ` — advertises as "${truncUtf8(v, ADV_NAME_LEN)}" (${21 + 2 + ADV_NAME_LEN}/31 bytes);`
+         + ` the full name still rides in every packet id, ${bytes - ADV_NAME_LEN} bytes more than a short one`;
+  } else {
+    msg += ` — fits the advert whole (${21 + 2 + bytes}/31 bytes)`;
+  }
+  hint.textContent = msg;
   hint.classList.toggle('bad', over);
 }
 
@@ -934,12 +1536,13 @@ $('serBtn').onclick = connectSerial;
 $('dcBtn').onclick = disconnect;
 $('cfgRead').onclick = readConfig;
 $('cfgWrite').onclick = writeConfig;
+$('sdFormat').onclick = formatSd;
+$('sdList').onclick = listSdLogs;
 $('cfgName').oninput = validateName;
 $('fieldSel').onchange = (e) => { state.selected = e.target.value; renderChart(); };
 $('jp3').onchange = () => { renderTable(); renderChart(); };
 $('themeBtn').onclick = () => {
-  const dark = document.documentElement.getAttribute('data-theme') === 'dark'
-    || (!document.documentElement.hasAttribute('data-theme') && matchMedia('(prefers-color-scheme: dark)').matches);
+  const dark = document.documentElement.getAttribute('data-theme') === 'dark';
   document.documentElement.setAttribute('data-theme', dark ? 'light' : 'dark');
   renderChart();
 };
@@ -963,6 +1566,10 @@ $('themeBtn').onclick = () => {
   if (!navigator.bluetooth) $('btBtn').disabled = true;
   if (!navigator.serial) $('serBtn').disabled = true;
 })();
+
+/* Rates and ages are wall-clock, so they have to tick even when nothing arrives —
+   that is what makes a task that has stopped publishing visible. */
+setInterval(() => { if (state.sources.size) { renderTiles(); renderTable(); } }, 1000);
 
 validateName();
 renderTiles();
