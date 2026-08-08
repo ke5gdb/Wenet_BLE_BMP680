@@ -26,6 +26,17 @@ from bme280 import BME280
 
 payload_name = "RAB_HAT"
 
+# ADC pin configuration
+adc0_name = 'adc0'
+adc0_scale = 1
+adc0_offset = 0
+adc1_name = 'adc1'
+adc1_scale = 1
+adc1_offset = 0
+adc2_name = 'adc2'
+adc2_scale = 1
+adc2_offset = 0
+
 # BLE Update rate (in ms)
 update_interval = 500
 
@@ -202,9 +213,9 @@ async def sensor_task():
         Pin('WL_GPIO1', Pin.OUT).on()
         
         # Get ADC values, scale as needed
-        adc0 = get_adc(0)
-        adc1 = get_adc(1)
-        adc2 = get_adc(2)
+        adc0 = get_adc(0) * adc0_scale + adc0_offset
+        adc1 = get_adc(1) * adc1_scale + adc1_offset
+        adc2 = get_adc(2) * adc2_scale + adc2_offset
 
         # vbatt = (get_adc(0) + 60) * vbatt_scale
 
@@ -220,9 +231,9 @@ async def sensor_task():
             'pi_temp' : core_temp,
 
             # ADC inputs
-            'adc0' : adc0,
-            'adc1' : adc1,
-            'adc2' : adc2
+            adc0_name : adc0,
+            adc1_name : adc1,
+            adc2_name : adc2
             # 'vbatt' : vbatt
         }
 
