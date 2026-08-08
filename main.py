@@ -6,7 +6,7 @@ import bluetooth
 import cbor2
 import time
 from micropython import const
-from machine import Pin, ADC, mem32, RTC, I2C, SPI
+from machine import Pin, ADC, mem32, RTC, I2C, SPI, unique_id
 import rp2
 import sdcard
 import vfs
@@ -24,6 +24,11 @@ from max31725 import MAX31725
 from hdc302x import HDC302x
 from bme280 import BME280
 
+# Change this to something unique to your payload. It will be used in the 
+# BLE advertisement and as the prefix for CSV filenames on the SD card.
+#
+# NOTE: There is a limit of 8 bytes for the BLE advertisement name, 
+# so if you use a longer name, it will be truncated.
 payload_name = "RAB_HAT"
 
 # ADC pin configuration
@@ -86,6 +91,18 @@ def _load_config():
             print(f"update_interval {interval} out of range (50-60000) -- ignoring")
 
 _load_config()
+
+# If the name was never customized, append a silicon-derived suffix so multiple
+# out-of-the-box payloads don't all advertise as "RAB_HAT".
+def _silicon_suffix():
+    # machine.unique_id() returns the 8-byte factory ID from the RP2040/RP2350
+    # silicon -- stable across reboots. Use the last byte so a fleet of otherwise
+    # identically-named payloads still get distinct IDs.
+    return "{:02x}".format(unique_id()[-1])
+
+if payload_name == "RAB_HAT":
+    payload_name = f"RAB_{_silicon_suffix()}"
+
 print(f"Config: payload_name={payload_name} update_interval={update_interval}ms")
 
 _WENET_SERVICE_UUID = bluetooth.UUID('fb63feb8-31ad-451d-a587-9fc20f9c8add')
