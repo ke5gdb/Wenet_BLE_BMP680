@@ -44,7 +44,7 @@ bottom of the window. `Ctrl+Shift+P` → **MicroPico: Connect** if it doesn't.
 
 ### 4. Configure before uploading
 
-**[main.py](main.py#L27)** — name your payload. This becomes part of the BLE packet `id`,
+**[main.py](main.py)** — name your payload. This becomes part of the BLE packet `id`,
 the advertised BLE name, and the CSV filename:
 
 ```python
@@ -56,7 +56,7 @@ payload IDs reduce the amount of data conveyed through the BLE data link (max 25
 
 You don't have to edit the file for this: `payload_name` and `update_interval` can also be
 set from [the web configurator](#web-configurator), which writes a `config.json` that
-[main.py](main.py#L47-L75) reads at boot. Anything missing or invalid falls back to the
+[main.py](main.py) reads at boot. Anything missing or invalid falls back to the
 values in the source, so a bad config can't stop the payload from booting.
 
 ### 5. Upload to the Pico
@@ -107,9 +107,9 @@ Addresses are reported in ascending order. Anything you've hung off J10 shows up
 list — if a sensor is missing here, it's a wiring or address problem, not a firmware one.
 
 The scan is followed by a **CSV** line of telemetry roughly every 500 ms — the same text
-that goes to the SD card ([main.py:358](main.py#L358)). There is no header row, and the
+that goes to the SD card ([main.py](main.py)). There is no header row, and the
 columns after the first eight depend on which sensors were detected. If an LSM6DSOX is
-fitted its task prints its own interleaved lines ([main.py:443](main.py#L443)) with a
+fitted its task prints its own interleaved lines ([main.py](main.py)) with a
 different layout, so read the columns against the task name in column 2, not by position
 alone. Each task writes to its own `data_log_<id>.csv` on the SD card.
 
@@ -119,7 +119,7 @@ its telemetry on the Nordic UART TX characteristic — see [Data output](#data-o
 
 Pressing **BOOTSEL** toggles the `debug` flag: the LED blinks ten times to confirm, then
 switches from a steady toggle to a short blip each cycle. Despite the comment at
-[main.py:194](main.py#L194), this only changes the LED — it does not change what is
+[main.py](main.py), this only changes the LED — it does not change what is
 transmitted.
 
 ### 7. Set the hardware clock
@@ -151,13 +151,13 @@ Schematic: [RAB Pi Pico HAT.pdf](RAB%20Pi%20Pico%20HAT.pdf) (Rev A, 2025-09-20).
 
 **Connectors:**
 
-| Connector | Type | Purpose |
-|---|---|---|
-| J10 | JST SM04B-SRSS | I2C expansion — 3V3, SDA, SCL, GND. Where external sensors go. |
-| J5 | JST S3B-PH | Analog in → **ADC0**, 100 Ω series + 0.1 µF. Direct 0–3.3 V. |
-| J4 | JST S3B-PH | Analog in → **ADC1**, 100 Ω series + 0.1 µF. Direct 0–3.3 V. |
-| J2 | JST S3B-PH | Analog in → **ADC2**, 10.2 kΩ series. 0–3.3 V as shipped; 0–13.2 V with `JP3` fitted. |
-| J3 / J8 | Molex / 0532610271 | Battery input to `+BATT` |
+| Connector | Type | Purpose | Comment | Mates | 
+|---|---|---|---|---|
+| J10 | JST SM04B-SRSS | I2C expansion — 3V3, SDA, SCL, GND. Where external sensors go. | Compatible with [Adafruit Stemma QT](https://learn.adafruit.com/introducing-adafruit-stemma-qt/what-is-stemma-qt) and [SparkFun Qwiic](https://www.sparkfun.com/qwiic) sensors. | [Adafuit 4210](https://www.adafruit.com/product/4210) (and similar). |
+| J5 | JST S3B-PH | Analog in **ADC0**, 100 Ω series + 0.1 µF. Direct 0–3.3 V. | Analog sensor connector compatible with [Adafuit Stemma](https://learn.adafruit.com/introducing-adafruit-stemma-qt/what-is-stemma). | [Adafruit 3893](https://www.adafruit.com/product/3893) (and similar). |
+| J4 | JST S3B-PH | Analog in **ADC1**, 100 Ω series + 0.1 µF. Direct 0–3.3 V. | Analog sensor connector compatible with [Adafuit Stemma](https://learn.adafruit.com/introducing-adafruit-stemma-qt/what-is-stemma). | [Adafruit 3893](https://www.adafruit.com/product/3893) (and similar). |
+| J2 | JST S3B-PH | Analog in **ADC2**, 10.2 kΩ series. 0–3.3 V as shipped; 0–13.2 V with `JP3` fitted. | Analog sensor connector compatible with [Adafuit Stemma](https://learn.adafruit.com/introducing-adafruit-stemma-qt/what-is-stemma). **Use this pin for up to 13.2V input – be sure to solder JP3** | [Adafruit 3893](https://www.adafruit.com/product/3893) (and similar). |
+| J3 / J8 | Molex PicoBlade / 0532610271 | Battery input to `+BATT` | 1.8-5.5V battery input. Ideal for single-cell Li-Ion battery. | [Adafruit 3922](https://www.adafruit.com/product/3922) (and similar). |
 
 Three things to know before you fly it:
 
@@ -177,7 +177,7 @@ Three things to know before you fly it:
 ### Wiring a bare Pico W
 
 Skip this if you have the HAT — it already matches. These are the defaults in
-[main.py](main.py#L54-L60) and [`sd_write_task()`](main.py#L428-L431); change them there if
+[main.py](main.py) and [`sd_write_task()`](main.py); change them there if
 your board differs.
 
 | Function | Interface | Pins |
@@ -210,6 +210,23 @@ ID register — you don't configure which one you have. Only one Bosch sensor pe
 tracked, so two identical parts at 0x76 and 0x77 will not both report. On the RAB HAT this
 is what `JP1` is for: it moves the onboard BMP280 clear of an external Bosch sensor.
 
+## Analog inputs
+
+Three filtered analog channels, each on its own JST PH connector wired Stemma-style —
+**3V3, signal, GND** — so a ratiometric sensor can be powered and read from the one cable.
+
+| Connector | Channel | Pico pin | Range | Front end |
+|---|---|---|---|---|
+| J5 | ADC0 | GP26 | 0–3.3 V | 100 Ω series + 0.1 µF |
+| J4 | ADC1 | GP27 | 0–3.3 V | 100 Ω series + 0.1 µF |
+| J2 | ADC2 | GP28 | 0–3.3 V, or 0–13.2 V with `JP3` fitted | 10.2 kΩ series; 4:1 divider once `JP3` grounds R7 |
+
+Each channel is read as a raw 12-bit count (0–4095) and reported as `adc0`–`adc2`. The
+channel names and a per-channel `scale`/`offset` are set at the top of
+[main.py](main.py), so `count * scale + offset` can turn counts into engineering
+units — e.g. `scale = 0.003223` yields volts on J2 with `JP3` fitted. Defaults are `scale = 1`,
+`offset = 0`, which passes the raw count through unchanged.
+
 ## Data output
 
 **BLE** — CBOR-encoded packets, updated every `update_interval` ms (500 by default).
@@ -218,9 +235,9 @@ The service and characteristic are **not the pair you'd expect**:
 | | UUID | Role |
 |---|---|---|
 | Advertised service | `fb63feb8-31ad-451d-a587-9fc20f9c8add` | Wenet — the only UUID in the advertising payload |
-| Wenet characteristic | `3d235f0e-61f8-4455-89c6-2f7d73c33178` | Registered at [main.py:42](main.py#L42), **never written** |
+| Wenet characteristic | `3d235f0e-61f8-4455-89c6-2f7d73c33178` | Registered in [main.py](main.py), **never written** |
 | NUS service | `6e400001-b5a3-f393-e0a9-e50e24dcca9e` | Not advertised |
-| **NUS TX characteristic** | `6e400003-b5a3-f393-e0a9-e50e24dcca9e` | **Where the CBOR actually goes** ([main.py:304](main.py#L304), [main.py:399](main.py#L399)) |
+| **NUS TX characteristic** | `6e400003-b5a3-f393-e0a9-e50e24dcca9e` | **Where the CBOR actually goes** ([main.py](main.py)) |
 
 So a client must *scan* for the Wenet service but *subscribe* to the Nordic UART TX
 characteristic. Under the Web Bluetooth API that means listing NUS in `optionalServices`,
@@ -363,7 +380,7 @@ fit a PCF8523; on the HAT check the ML621 coin cell, then run the time sync desc
 [Set the hardware clock](#7-set-the-hardware-clock). Otherwise timestamps are relative to boot.
 
 **`Unable to set up SD card!`** — make sure the card is formatted FAT32, and try a lower
-`baudrate` in [`sd_write_task()`](main.py#L486). On a bare Pico also check the SPI wiring
+`baudrate` in [`sd_write_task()`](main.py). On a bare Pico also check the SPI wiring
 against the table above.
 
 **The payload doesn't appear in the configurator's Bluetooth picker** — the picker filters on
@@ -386,6 +403,6 @@ attenuation, so J2 is 0–3.3 V and anything higher pins the reading. Fitted mea
 divider, so multiply counts by 0.003223 to get volts. A reading 4× lower than expected means
 `JP3` is in and you're scaling as though it isn't.
 
-Either way, don't just uncomment `vbatt_scale` in [main.py](main.py#L130) — it's from a
+Either way, don't just uncomment `vbatt_scale` in [main.py](main.py) — it's from a
 *different* board, assuming an 11.97 kΩ/2.68 kΩ divider on ADC0 rather than the HAT's
 10.2 kΩ/3.4 kΩ on ADC2.

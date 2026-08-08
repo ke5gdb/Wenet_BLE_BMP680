@@ -322,7 +322,7 @@
 /* =====================================================================
    UUIDs — see main.py. The firmware advertises ONLY the Wenet service,
    but writes its CBOR packets to the Nordic UART TX characteristic
-   (main.py:346 / main.py:441 — one write per sensor task, each with its own
+   (see the sensor tasks in main.py — one write per sensor task, each with its own
    `id`, which is why telemetry state below is keyed by source). The Wenet
    characteristic is registered
    and never written, so we filter on Wenet and read from NUS. Web
